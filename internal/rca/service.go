@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/gauravgs7/argus/internal/correlation"
 	"github.com/gauravgs7/argus/internal/incidents"
 	"github.com/gauravgs7/argus/internal/telemetry"
 )
@@ -18,6 +20,7 @@ type Service struct {
 	aiServiceURL string
 	metrics      *telemetry.Metrics
 	httpClient   *http.Client
+	correlator   *correlation.Correlator
 }
 
 type Candidate struct {
@@ -27,12 +30,21 @@ type Candidate struct {
 	RequiresApproval bool   `json:"requires_approval"`
 }
 
+type scoredHypothesis struct {
+	Name       string
+	Score      float64
+	Evidence   []string
+	Candidates []Candidate
+	Factors    []string
+}
+
 func NewService(store *incidents.Store, aiServiceURL string, metrics *telemetry.Metrics) *Service {
 	return &Service{
 		store:        store,
 		aiServiceURL: strings.TrimRight(aiServiceURL, "/"),
 		metrics:      metrics,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		correlator:   correlation.New(),
 	}
 }
 
@@ -49,11 +61,18 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		return incidents.RCAReport{}, nil, err
 	}
 
-	summary, hypothesis, confidence, evidence, candidates := buildDeterministicRCA(incident, signals)
+	correlated := s.correlator.Correlate(incident, signals)
+	for _, event := range correlated.Events {
+		event.IncidentID = incidentID
+		_ = s.store.AddTimelineEvent(ctx, event)
+	}
+
+	summary, hypothesis, confidence, evidence, factors, candidates := buildDeterministicRCA(incident, signals)
 	report := incidents.RCAReport{
 		IncidentID:           incidentID,
 		DeterministicSummary: summary,
 		PrimaryHypothesis:    hypothesis,
+		ContributingFactors:  factors,
 		Evidence:             evidence,
 		Confidence:           confidence,
 		ModelBackend:         "deterministic",
@@ -73,6 +92,7 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 	_ = s.store.UpdateIncidentStatus(ctx, incidentID, incidents.StatusRCAGenerated)
 	s.metrics.RCAJobsTotal.WithLabelValues("succeeded").Inc()
 	s.metrics.RCADuration.WithLabelValues(report.ModelBackend).Observe(time.Since(start).Seconds())
+	s.metrics.RCAConfidence.WithLabelValues(hypothesis).Observe(confidence)
 
 	saved, err := s.store.GetLatestRCAReport(ctx, incidentID)
 	if err != nil {
@@ -81,82 +101,104 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 	return saved, candidates, nil
 }
 
-func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Signal) (summary, hypothesis string, confidence float64, evidence []string, candidates []Candidate) {
-	confidence = 0.45
-	for _, signal := range signals {
-		payload, _ := json.Marshal(signal.Body)
-		text := strings.ToLower(signal.Name + " " + string(payload) + " " + signal.Source)
-
-		switch {
-		case strings.Contains(text, "postgres") && strings.Contains(text, "connection"):
-			hypothesis = "PostgreSQL connection pool exhaustion"
-			confidence = 0.88
-			evidence = appendEvidence(evidence,
-				incident.Service+" error rate increased",
-				"application logs indicate postgres connection acquisition timeout",
-				"signal stream references connection pool saturation",
-			)
-			candidates = []Candidate{
+func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Signal) (summary, hypothesis string, confidence float64, evidence []string, factors []string, candidates []Candidate) {
+	correlated := correlation.New().Correlate(incident, signals)
+	hypotheses := map[string]*scoredHypothesis{
+		"PostgreSQL connection pool exhaustion": {
+			Name: "PostgreSQL connection pool exhaustion",
+			Candidates: []Candidate{
 				{ActionType: "drain_postgres_connections", Target: incident.Service, Risk: "medium", RequiresApproval: true},
 				{ActionType: "restart_service", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-			}
-		case strings.Contains(text, "redis") && strings.Contains(text, "memory"):
-			hypothesis = "Redis memory pressure causing cache degradation"
-			confidence = 0.83
-			evidence = appendEvidence(evidence,
-				"redis memory pressure signal crossed threshold",
-				"cache errors increased during the incident window",
-			)
-			candidates = []Candidate{
-				{ActionType: "clear_redis_keyspace", Target: "demo:pressure:*", Risk: "medium", RequiresApproval: true},
-			}
-		case strings.Contains(text, "nginx") && strings.Contains(text, "5"):
-			hypothesis = "Nginx upstream misconfiguration or bad route rollout"
-			confidence = 0.8
-			evidence = appendEvidence(evidence,
-				"edge layer is returning 5xx",
-				"route-level issue appears isolated from service health",
-			)
-			candidates = []Candidate{
+			},
+		},
+		"Redis memory pressure causing cache degradation": {
+			Name:       "Redis memory pressure causing cache degradation",
+			Candidates: []Candidate{{ActionType: "clear_redis_keyspace", Target: "demo:pressure:*", Risk: "medium", RequiresApproval: true}},
+		},
+		"Nginx upstream misconfiguration or bad route rollout": {
+			Name: "Nginx upstream misconfiguration or bad route rollout",
+			Candidates: []Candidate{
 				{ActionType: "rollback_config", Target: "nginx", Risk: "medium", RequiresApproval: true},
 				{ActionType: "reload_nginx", Target: "nginx", Risk: "medium", RequiresApproval: true},
-			}
-		case strings.Contains(text, "notification") || strings.Contains(text, "latency"):
-			hypothesis = "Downstream dependency latency dominates the request path"
-			confidence = 0.76
-			evidence = appendEvidence(evidence,
-				"latency increased before failure rate",
-				"downstream dependency signal dominates the incident window",
-			)
-			candidates = []Candidate{
-				{ActionType: "revert_feature_flag", Target: "optional-notifications", Risk: "medium", RequiresApproval: true},
-			}
-		case strings.Contains(text, "config") || strings.Contains(text, "parse"):
-			hypothesis = "Bad config rollout introduced an invalid runtime configuration"
-			confidence = 0.85
-			evidence = appendEvidence(evidence,
-				"config-related errors appeared during the incident window",
-				"a deployment or config change likely preceded impact",
-			)
-			candidates = []Candidate{
+			},
+		},
+		"Downstream dependency latency dominates the request path": {
+			Name:       "Downstream dependency latency dominates the request path",
+			Candidates: []Candidate{{ActionType: "revert_feature_flag", Target: "optional-notifications", Risk: "medium", RequiresApproval: true}},
+		},
+		"Bad config rollout introduced an invalid runtime configuration": {
+			Name: "Bad config rollout introduced an invalid runtime configuration",
+			Candidates: []Candidate{
 				{ActionType: "rollback_config", Target: incident.Service, Risk: "medium", RequiresApproval: true},
 				{ActionType: "restart_service", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-			}
+			},
+		},
+	}
+
+	for _, item := range correlated.Evidence {
+		summaryText := strings.ToLower(item.Summary)
+		switch {
+		case strings.Contains(summaryText, "postgres") || strings.Contains(summaryText, "connection acquisition"):
+			addScore(hypotheses["PostgreSQL connection pool exhaustion"], item)
+		case strings.Contains(summaryText, "redis") || strings.Contains(summaryText, "cache"):
+			addScore(hypotheses["Redis memory pressure causing cache degradation"], item)
+		case strings.Contains(summaryText, "nginx") || strings.Contains(summaryText, "edge layer") || strings.Contains(summaryText, "upstream"):
+			addScore(hypotheses["Nginx upstream misconfiguration or bad route rollout"], item)
+		case strings.Contains(summaryText, "dependency") || strings.Contains(summaryText, "latency") || strings.Contains(summaryText, "notification"):
+			addScore(hypotheses["Downstream dependency latency dominates the request path"], item)
+		case strings.Contains(summaryText, "config") || strings.Contains(summaryText, "rollout"):
+			addScore(hypotheses["Bad config rollout introduced an invalid runtime configuration"], item)
 		}
 	}
 
-	if hypothesis == "" {
-		hypothesis = "Insufficient evidence for a high-confidence root cause"
-		summary = "Signals have been collected, but deterministic correlation did not find a strong hypothesis."
-		evidence = appendEvidence(evidence, "No high-confidence rule match found")
-		candidates = []Candidate{
-			{ActionType: "restart_service", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-		}
-		return summary, hypothesis, confidence, evidence, candidates
+	best := bestHypothesis(hypotheses)
+	if best == nil || best.Score <= 0 {
+		return "Signals have been collected, but deterministic correlation did not find a strong hypothesis.",
+			"Insufficient evidence for a high-confidence root cause",
+			0.35,
+			[]string{"No high-confidence rule match found"},
+			[]string{"missing correlated metric/log/trace evidence"},
+			[]Candidate{{ActionType: "collect_diagnostics", Target: incident.Service, Risk: "low", RequiresApproval: false}}
 	}
 
-	summary = fmt.Sprintf("%s likely impacted %s. Evidence points to %s.", incident.Title, incident.Service, hypothesis)
-	return summary, hypothesis, confidence, evidence, candidates
+	confidence = clamp(0.35+best.Score, 0.35, 0.95)
+	evidence = appendEvidence(nil, best.Evidence...)
+	factors = appendEvidence(nil, best.Factors...)
+	hypothesis = best.Name
+	candidates = best.Candidates
+	summary = fmt.Sprintf("%s likely impacted %s. Deterministic evidence score %.2f points to %s.", incident.Title, incident.Service, confidence, hypothesis)
+	return summary, hypothesis, confidence, evidence, factors, candidates
+}
+
+func addScore(h *scoredHypothesis, item correlation.EvidenceItem) {
+	if h == nil {
+		return
+	}
+	h.Score += item.Weight * item.Confidence
+	h.Evidence = appendEvidence(h.Evidence, item.Summary)
+	h.Factors = appendEvidence(h.Factors, item.Type+" from "+item.Source)
+}
+
+func bestHypothesis(items map[string]*scoredHypothesis) *scoredHypothesis {
+	ordered := make([]*scoredHypothesis, 0, len(items))
+	for _, item := range items {
+		ordered = append(ordered, item)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Score > ordered[j].Score })
+	if len(ordered) == 0 {
+		return nil
+	}
+	return ordered[0]
+}
+
+func clamp(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, evidence []string, hypothesis string) (summary, backend, model string, err error) {
@@ -190,6 +232,10 @@ func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, 
 		return "", "", "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		s.metrics.LLMRequestsTotal.WithLabelValues("unknown", "failed").Inc()
+		return "", "", "", fmt.Errorf("ai service returned %s", resp.Status)
+	}
 
 	var payload struct {
 		Summary string `json:"summary"`
@@ -211,6 +257,9 @@ func appendEvidence(items []string, values ...string) []string {
 		existing[item] = struct{}{}
 	}
 	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
 		if _, ok := existing[value]; ok {
 			continue
 		}

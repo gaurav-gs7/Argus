@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:16
+    mem_limit: 384m
+    cpus: 0.50
     environment:
       POSTGRES_USER: argus
       POSTGRES_PASSWORD: argus
@@ -15,17 +17,23 @@ services:
 
   redis:
     image: redis:7
+    mem_limit: 128m
+    cpus: 0.25
     ports:
       - "6379:6379"
 
   nats:
     image: nats:2
+    mem_limit: 128m
+    cpus: 0.25
     command: ["-js"]
     ports:
       - "4222:4222"
       - "8222:8222"
 
   argus-api:
+    mem_limit: 256m
+    cpus: 0.50
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -36,7 +44,7 @@ services:
       ARGUS_NATS_URL: nats://nats:4222
       ARGUS_LLM_BACKEND: mock
       ARGUS_AI_SERVICE_URL: http://argus-ai:8090
-      ARGUS_JWT_SECRET: local-dev-secret
+      ARGUS_AUTH_TOKENS: ${ARGUS_AUTH_TOKENS:-local-admin-token:admin:admin@local,local-operator-token:operator:operator@local,local-viewer-token:viewer:viewer@local}
       ARGUS_LOG_LEVEL: INFO
       ARGUS_REMEDIATION_EXECUTOR: ${ARGUS_REMEDIATION_EXECUTOR:-local}
       ARGUS_HELIOS_BASE_URL: ${ARGUS_HELIOS_BASE_URL:-}
@@ -53,6 +61,8 @@ services:
         condition: service_started
 
   argus-worker:
+    mem_limit: 192m
+    cpus: 0.35
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -70,6 +80,8 @@ services:
         condition: service_started
 
   argus-ai:
+    mem_limit: 256m
+    cpus: 0.50
     build:
       context: ./ai-service
     environment:
@@ -89,6 +101,8 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.53.0
+    mem_limit: 384m
+    cpus: 0.50
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:
       - ./configs/prometheus:/etc/prometheus
@@ -97,6 +111,8 @@ services:
 
   grafana:
     image: grafana/grafana:11.1.0
+    mem_limit: 384m
+    cpus: 0.50
     volumes:
       - ./configs/grafana/provisioning:/etc/grafana/provisioning
       - ./configs/grafana/dashboards:/var/lib/grafana/dashboards
@@ -105,6 +121,8 @@ services:
 
   loki:
     image: grafana/loki:3.0.0
+    mem_limit: 256m
+    cpus: 0.35
     command: ["-config.file=/etc/loki/loki.yml"]
     volumes:
       - ./configs/loki/loki.yml:/etc/loki/loki.yml
@@ -113,6 +131,8 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.104.0
+    mem_limit: 192m
+    cpus: 0.35
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./configs/otel/otel-collector.yml:/etc/otelcol/config.yaml
@@ -121,6 +141,8 @@ services:
       - "4318:4318"
 
   payments-api:
+    mem_limit: 128m
+    cpus: 0.25
     build:
       context: ./demo/services/payments-api
     environment:

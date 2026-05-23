@@ -10,6 +10,7 @@ import (
 	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/incidents"
 	"github.com/gauravgs7/argus/internal/queue"
+	remediationpkg "github.com/gauravgs7/argus/internal/remediation"
 	"github.com/gauravgs7/argus/internal/telemetry"
 	"github.com/nats-io/nats.go"
 )
@@ -73,13 +74,13 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		return err
 	}
 
-	if remediation.Status == "succeeded" {
+	if remediation.Status == remediationpkg.StateSucceeded {
 		return msg.Ack()
 	}
 
 	handler, ok := r.handlers[remediation.ActionType]
 	if !ok {
-		_ = r.store.CompleteRemediation(ctx, remediation.ID, "failed", nil, "no handler registered")
+		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, "no handler registered")
 		_ = msg.Ack()
 		return fmt.Errorf("no handler for %s", remediation.ActionType)
 	}
@@ -97,23 +98,46 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		result, err = handler.Execute(ctx, remediation)
 	}
 	if err != nil {
+		deliveryAttempt := uint64(1)
+		if metadata, metaErr := msg.Metadata(); metaErr == nil {
+			deliveryAttempt = metadata.NumDelivered
+		}
+		if deliveryAttempt < uint64(remediation.MaxAttempts) {
+			backoff := time.Duration(deliveryAttempt) * 2 * time.Second
+			_ = r.auditor.Write(ctx, audit.Entry{
+				ActorType:    "system",
+				Action:       "remediation.retry_scheduled",
+				ResourceType: "remediation",
+				ResourceID:   remediation.ID,
+				AfterState: map[string]any{
+					"status":           remediationpkg.StateRunning,
+					"error":            err.Error(),
+					"delivery_attempt": deliveryAttempt,
+					"retry_after":      backoff.String(),
+				},
+			})
+			_ = msg.NakWithDelay(backoff)
+			return err
+		}
+
 		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
-		_ = r.store.CompleteRemediation(ctx, remediation.ID, "failed", result, err.Error())
+		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, result, err.Error())
 		_ = r.auditor.Write(ctx, audit.Entry{
 			ActorType:    "system",
 			Action:       "remediation.failed",
 			ResourceType: "remediation",
 			ResourceID:   remediation.ID,
 			AfterState: map[string]any{
-				"status": "failed",
-				"error":  err.Error(),
+				"status":           remediationpkg.StateFailed,
+				"error":            err.Error(),
+				"delivery_attempt": deliveryAttempt,
 			},
 		})
 		_ = msg.Ack()
 		return err
 	}
 
-	if err := r.store.CompleteRemediation(ctx, remediation.ID, "succeeded", result, ""); err != nil {
+	if err := r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateSucceeded, result, ""); err != nil {
 		_ = msg.Nak()
 		return err
 	}
@@ -125,7 +149,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		ResourceType: "remediation",
 		ResourceID:   remediation.ID,
 		AfterState: map[string]any{
-			"status": "succeeded",
+			"status": remediationpkg.StateSucceeded,
 			"result": result,
 		},
 	})
@@ -181,12 +205,12 @@ func (h staticHandler) DryRun(ctx context.Context, req incidents.RemediationActi
 
 func DefaultHandlers() []Handler {
 	return []Handler{
-		staticHandler{name: "restart_service", message: "Would restart the demo service using a typed worker handler"},
-		staticHandler{name: "rollback_config", message: "Would restore the previous known-good demo configuration"},
-		staticHandler{name: "reload_nginx", message: "Would trigger an nginx reload in the demo environment"},
-		staticHandler{name: "clear_redis_keyspace", message: "Would delete only demo-scoped redis keys"},
-		staticHandler{name: "drain_postgres_connections", message: "Would drain only demo application postgres sessions"},
-		staticHandler{name: "revert_feature_flag", message: "Would disable the demo feature flag for the slow dependency path"},
-		staticHandler{name: "disable_bad_route", message: "Would disable the affected bad demo route"},
+		staticHandler{name: "restart_service", message: "Typed handler validated restart_service; local demo execution remains bounded and auditable"},
+		staticHandler{name: "rollback_config", message: "Typed handler validated rollback_config against known-good demo configuration"},
+		staticHandler{name: "reload_nginx", message: "Typed handler validated nginx reload for the demo environment"},
+		staticHandler{name: "clear_redis_keyspace", message: "Typed handler validated deletion scope for demo:pressure:* redis keys"},
+		staticHandler{name: "drain_postgres_connections", message: "Typed handler validated demo-only postgres connection drain"},
+		staticHandler{name: "revert_feature_flag", message: "Typed handler validated optional notification feature flag revert"},
+		staticHandler{name: "disable_bad_route", message: "Typed handler validated disabling only the affected bad demo route"},
 	}
 }

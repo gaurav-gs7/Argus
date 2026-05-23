@@ -1,0 +1,54 @@
+{
+  "scenario": "nginx_5xx_spike",
+  "incident": {
+    "service": "payments-api",
+    "severity": "sev2",
+    "status": "awaiting_approval",
+    "dedupe_key": "payments-api:nginx_5xx_spike:local:manual-nginx_5xx_spike"
+  },
+  "timeline": [
+    {
+      "type": "correlated_evidence",
+      "summary": "edge layer is returning elevated 5xx",
+      "confidence": 0.8
+    },
+    {
+      "type": "correlated_evidence",
+      "summary": "nginx route or upstream config changed near the incident window",
+      "confidence": 0.8
+    }
+  ],
+  "rca": {
+    "primary_hypothesis": "Nginx upstream misconfiguration or bad route rollout",
+    "confidence": 0.8,
+    "evidence": [
+      "edge layer is returning elevated 5xx",
+      "nginx route or upstream config changed near the incident window"
+    ]
+  },
+  "remediations": [
+    {
+      "action_type": "rollback_config",
+      "risk": "medium",
+      "status": "awaiting_approval",
+      "requires_approval": true,
+      "policy_reason": "Medium risk remediation requires approval"
+    },
+    {
+      "action_type": "reload_nginx",
+      "risk": "medium",
+      "status": "awaiting_approval",
+      "requires_approval": true,
+      "policy_reason": "Medium risk remediation requires approval"
+    }
+  ],
+  "audit": [
+    "incident.detected",
+    "remediation.proposed"
+  ],
+  "safety_notes": [
+    "LLM is advisory only",
+    "Policy has final authority",
+    "Actions are typed handlers, not arbitrary shell commands"
+  ]
+}

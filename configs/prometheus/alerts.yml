@@ -31,3 +31,38 @@ groups:
           environment: local
         annotations:
           summary: "payments-api postgres pool saturation"
+
+  - name: argus-control-plane
+    rules:
+      - alert: ArgusPolicyDenialsHigh
+        expr: increase(argus_policy_denials_total[10m]) > 3
+        for: 2m
+        labels:
+          severity: sev3
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus policy denials are increasing"
+          runbook: "remediation-safety"
+
+      - alert: ArgusRemediationFailures
+        expr: increase(argus_remediation_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: sev2
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus remediation worker reported failures"
+          runbook: "remediation-safety"
+
+      - alert: ArgusRCAJobsFailing
+        expr: increase(argus_rca_jobs_total{result="failed"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: sev3
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus RCA generation is failing"
+          runbook: "incident-lifecycle"

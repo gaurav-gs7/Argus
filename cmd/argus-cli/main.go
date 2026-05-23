@@ -14,20 +14,20 @@ import (
 
 func main() {
 	var baseURL string
-	var actor string
+	var token string
 
 	root := &cobra.Command{
 		Use:   "argus",
 		Short: "Argus operational CLI",
 	}
 	root.PersistentFlags().StringVar(&baseURL, "base-url", getenv("ARGUS_API_BASE_URL", "http://localhost:8080"), "Argus API base URL")
-	root.PersistentFlags().StringVar(&actor, "actor", getenv("ARGUS_ACTOR", "admin@local"), "Actor identity header")
+	root.PersistentFlags().StringVar(&token, "token", getenv("ARGUS_API_TOKEN", "local-admin-token"), "Bearer token for Argus API")
 
 	root.AddCommand(
-		incidentCmd(&baseURL, &actor),
-		remediationCmd(&baseURL, &actor),
-		scenarioCmd(&baseURL, &actor),
-		runbookCmd(&baseURL, &actor),
+		incidentCmd(&baseURL, &token),
+		remediationCmd(&baseURL, &token),
+		scenarioCmd(&baseURL, &token),
+		runbookCmd(&baseURL, &token),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -35,14 +35,14 @@ func main() {
 	}
 }
 
-func incidentCmd(baseURL, actor *string) *cobra.Command {
+func incidentCmd(baseURL, token *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "incident"}
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "list",
 			Short: "List incidents",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return printRequest(http.MethodGet, *baseURL+"/v1/incidents", nil, *actor)
+				return printRequest(http.MethodGet, *baseURL+"/v1/incidents", nil, *token)
 			},
 		},
 		&cobra.Command{
@@ -50,7 +50,7 @@ func incidentCmd(baseURL, actor *string) *cobra.Command {
 			Short: "Get incident details",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0], nil, *actor)
+				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0], nil, *token)
 			},
 		},
 		&cobra.Command{
@@ -58,14 +58,14 @@ func incidentCmd(baseURL, actor *string) *cobra.Command {
 			Short: "Get latest RCA report",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0]+"/rca", nil, *actor)
+				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0]+"/rca", nil, *token)
 			},
 		},
 	)
 	return cmd
 }
 
-func remediationCmd(baseURL, actor *string) *cobra.Command {
+func remediationCmd(baseURL, token *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "remediation"}
 
 	cmd.AddCommand(
@@ -74,7 +74,7 @@ func remediationCmd(baseURL, actor *string) *cobra.Command {
 			Short: "List remediations for an incident",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0]+"/remediations", nil, *actor)
+				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0]+"/remediations", nil, *token)
 			},
 		},
 		&cobra.Command{
@@ -82,8 +82,8 @@ func remediationCmd(baseURL, actor *string) *cobra.Command {
 			Short: "Approve a remediation",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				body := map[string]any{"approved_by": *actor, "reason": "Approved from CLI"}
-				return printRequest(http.MethodPost, *baseURL+"/v1/remediations/"+args[0]+"/approve", body, *actor)
+				body := map[string]any{"reason": "Approved from CLI"}
+				return printRequest(http.MethodPost, *baseURL+"/v1/remediations/"+args[0]+"/approve", body, *token)
 			},
 		},
 		func() *cobra.Command {
@@ -94,7 +94,7 @@ func remediationCmd(baseURL, actor *string) *cobra.Command {
 				Args:  cobra.ExactArgs(1),
 				RunE: func(cmd *cobra.Command, args []string) error {
 					body := map[string]any{"dry_run": dryRun}
-					return printRequest(http.MethodPost, *baseURL+"/v1/remediations/"+args[0]+"/execute", body, *actor)
+					return printRequest(http.MethodPost, *baseURL+"/v1/remediations/"+args[0]+"/execute", body, *token)
 				},
 			}
 			sub.Flags().BoolVar(&dryRun, "dry-run", true, "Execute in dry-run mode")
@@ -105,7 +105,7 @@ func remediationCmd(baseURL, actor *string) *cobra.Command {
 	return cmd
 }
 
-func scenarioCmd(baseURL, actor *string) *cobra.Command {
+func scenarioCmd(baseURL, token *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "scenario"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "run <name>",
@@ -113,27 +113,27 @@ func scenarioCmd(baseURL, actor *string) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{"scenario": args[0]}
-			return printRequest(http.MethodPost, *baseURL+"/v1/signals/manual", body, *actor)
+			return printRequest(http.MethodPost, *baseURL+"/v1/signals/manual", body, *token)
 		},
 	})
 	return cmd
 }
 
-func runbookCmd(baseURL, actor *string) *cobra.Command {
+func runbookCmd(baseURL, token *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "runbook"}
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "index",
 			Short: "Queue runbook indexing",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return printRequest(http.MethodPost, *baseURL+"/v1/runbooks/reindex", map[string]any{}, *actor)
+				return printRequest(http.MethodPost, *baseURL+"/v1/runbooks/reindex", map[string]any{}, *token)
 			},
 		},
 	)
 	return cmd
 }
 
-func printRequest(method, url string, body any, actor string) error {
+func printRequest(method, url string, body any, token string) error {
 	var reader io.Reader
 	if body != nil {
 		payload, _ := json.Marshal(body)
@@ -145,7 +145,9 @@ func printRequest(method, url string, body any, actor string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Argus-Actor", actor)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

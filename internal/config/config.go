@@ -14,7 +14,7 @@ type Config struct {
 	NATSURL              string
 	AIServiceURL         string
 	LogLevel             string
-	JWTSecret            string
+	AuthTokens           string
 	IncidentGrouping     time.Duration
 	RemediationExecutor  string
 	HeliosBaseURL        string
@@ -33,7 +33,7 @@ func Load() Config {
 		NATSURL:              getenv("ARGUS_NATS_URL", "nats://localhost:4222"),
 		AIServiceURL:         strings.TrimRight(getenv("ARGUS_AI_SERVICE_URL", "http://localhost:8090"), "/"),
 		LogLevel:             strings.ToUpper(getenv("ARGUS_LOG_LEVEL", "INFO")),
-		JWTSecret:            getenv("ARGUS_JWT_SECRET", "local-dev-secret"),
+		AuthTokens:           getenv("ARGUS_AUTH_TOKENS", "local-admin-token:admin:admin@local,local-operator-token:operator:operator@local,local-viewer-token:viewer:viewer@local"),
 		IncidentGrouping:     getduration("ARGUS_INCIDENT_GROUPING_WINDOW", 5*time.Minute),
 		RemediationExecutor:  strings.ToLower(getenv("ARGUS_REMEDIATION_EXECUTOR", "local")),
 		HeliosBaseURL:        strings.TrimRight(getenv("ARGUS_HELIOS_BASE_URL", ""), "/"),

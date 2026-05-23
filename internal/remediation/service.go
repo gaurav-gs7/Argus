@@ -27,30 +27,44 @@ func NewService(store *incidents.Store, auditor *audit.Service, policyEngine *po
 	if executor == nil {
 		executor = NewLocalExecutor(queueClient)
 	}
-	return &Service{
-		store:   store,
-		auditor: auditor,
-		policy:  policyEngine,
-		metrics: metrics,
-		exec:    executor,
-	}
+	return &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor}
 }
 
 func BuildIdempotencyKey(incidentID, actionType, target string, attempt int) string {
 	return fmt.Sprintf("%s_%s_%s_%d", incidentID, actionType, target, attempt)
 }
 
-func (s *Service) Propose(ctx context.Context, incident incidents.Incident, candidates []rca.Candidate, actor string) ([]incidents.RemediationAction, error) {
+func (s *Service) Propose(ctx context.Context, incident incidents.Incident, candidates []rca.Candidate, actor, actorRole string) ([]incidents.RemediationAction, error) {
 	var actions []incidents.RemediationAction
+	awaitingApproval := false
+
 	for _, candidate := range candidates {
+		if existing, err := s.store.FindActiveRemediationByAction(ctx, incident.ID, candidate.ActionType, candidate.Target); err != nil {
+			return nil, err
+		} else if existing != nil {
+			actions = append(actions, *existing)
+			_ = s.auditor.Write(ctx, audit.Entry{
+				ActorID: actor, ActorType: "user", Action: "remediation.proposal_reused", ResourceType: "remediation", ResourceID: existing.ID,
+				AfterState: map[string]any{"status": existing.Status, "idempotency_key": existing.IdempotencyKey},
+			})
+			if existing.Status == StateAwaitingApproval {
+				awaitingApproval = true
+			}
+			continue
+		}
+
 		recentCount, err := s.store.CountRecentSimilarRemediations(ctx, incident.ID, candidate.ActionType, candidate.Target)
+		if err != nil {
+			return nil, err
+		}
+		failedCount, err := s.store.CountFailedRemediations(ctx, incident.ID, candidate.ActionType, candidate.Target)
 		if err != nil {
 			return nil, err
 		}
 
 		var input policy.Input
 		input.Actor.ID = actor
-		input.Actor.Role = "operator"
+		input.Actor.Role = actorRole
 		input.Incident.ID = incident.ID
 		input.Incident.Severity = incident.Severity
 		input.Incident.Service = incident.Service
@@ -60,21 +74,23 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		input.Remediation.Risk = candidate.Risk
 		input.Remediation.DryRun = true
 		input.History.SameActionLast10m = recentCount
-		input.History.FailedAttempts = 0
+		input.History.FailedAttempts = failedCount
 
 		decision := s.policy.Evaluate(input)
 		if !decision.Allow {
 			s.metrics.PolicyDenialsTotal.WithLabelValues(candidate.ActionType, decision.Reason).Inc()
 		}
 
-		status := "policy_blocked"
+		status := StatePolicyBlocked
 		if decision.Allow && decision.RequiresApproval {
-			status = "awaiting_approval"
+			status = StateAwaitingApproval
+			awaitingApproval = true
 		}
 		if decision.Allow && !decision.RequiresApproval {
-			status = "approved"
+			status = StateApproved
 		}
 
+		attempt := recentCount + 1
 		action := incidents.RemediationAction{
 			ID:             common.NewID("rem"),
 			IncidentID:     incident.ID,
@@ -82,16 +98,18 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 			Target:         candidate.Target,
 			Status:         status,
 			Risk:           candidate.Risk,
-			IdempotencyKey: BuildIdempotencyKey(incident.ID, candidate.ActionType, candidate.Target, recentCount+1),
+			IdempotencyKey: BuildIdempotencyKey(incident.ID, candidate.ActionType, candidate.Target, attempt),
 			ProposedBy:     actor,
 			PolicyDecision: map[string]any{
 				"allow":             decision.Allow,
 				"requires_approval": decision.RequiresApproval,
 				"reason":            decision.Reason,
 				"max_attempts":      decision.MaxAttempts,
+				"failed_attempts":   failedCount,
+				"same_action_10m":   recentCount,
 			},
 			DryRun:      true,
-			Attempt:     recentCount + 1,
+			Attempt:     attempt,
 			MaxAttempts: decision.MaxAttempts,
 			CreatedAt:   time.Now().UTC(),
 		}
@@ -103,72 +121,73 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		s.metrics.RemediationsTotal.WithLabelValues(action.ActionType, action.Status).Inc()
 
 		_ = s.auditor.Write(ctx, audit.Entry{
-			ActorID:      actor,
-			ActorType:    "user",
-			Action:       "remediation.proposed",
-			ResourceType: "remediation",
-			ResourceID:   action.ID,
-			AfterState: map[string]any{
-				"status": action.Status,
-				"risk":   action.Risk,
-			},
-			Metadata: action.PolicyDecision,
+			ActorID: actor, ActorType: "user", Action: "remediation.proposed", ResourceType: "remediation", ResourceID: action.ID,
+			AfterState: map[string]any{"status": action.Status, "risk": action.Risk, "idempotency_key": action.IdempotencyKey},
+			Metadata:   action.PolicyDecision,
 		})
 	}
 
 	if len(actions) > 0 {
-		_ = s.store.UpdateIncidentStatus(ctx, incident.ID, incidents.StatusRemediationProposed)
+		status := incidents.StatusRemediationProposed
+		if awaitingApproval {
+			status = incidents.StatusAwaitingApproval
+		}
+		_ = s.store.UpdateIncidentStatus(ctx, incident.ID, status)
 	}
-
 	return actions, nil
 }
 
 func (s *Service) Approve(ctx context.Context, remediationID, approvedBy string) error {
-	if err := s.store.UpdateRemediationApproval(ctx, remediationID, "approved", approvedBy); err != nil {
+	rem, err := s.store.GetRemediation(ctx, remediationID)
+	if err != nil {
+		return err
+	}
+	if err := RequireTransition(rem.Status, StateApproved); err != nil {
+		return err
+	}
+	if err := s.store.UpdateRemediationApproval(ctx, remediationID, StateApproved, approvedBy); err != nil {
 		return err
 	}
 	return s.auditor.Write(ctx, audit.Entry{
-		ActorID:      approvedBy,
-		ActorType:    "user",
-		Action:       "remediation.approved",
-		ResourceType: "remediation",
-		ResourceID:   remediationID,
-		AfterState: map[string]any{
-			"status":      "approved",
-			"approved_by": approvedBy,
-		},
+		ActorID: approvedBy, ActorType: "user", Action: "remediation.approved", ResourceType: "remediation", ResourceID: remediationID,
+		BeforeState: map[string]any{"status": rem.Status},
+		AfterState:  map[string]any{"status": StateApproved, "approved_by": approvedBy},
 	})
 }
 
 func (s *Service) Reject(ctx context.Context, remediationID, rejectedBy string) error {
-	if err := s.store.UpdateRemediationApproval(ctx, remediationID, "rejected", ""); err != nil {
+	rem, err := s.store.GetRemediation(ctx, remediationID)
+	if err != nil {
+		return err
+	}
+	if err := RequireTransition(rem.Status, StateRejected); err != nil {
+		return err
+	}
+	if err := s.store.UpdateRemediationApproval(ctx, remediationID, StateRejected, ""); err != nil {
 		return err
 	}
 	return s.auditor.Write(ctx, audit.Entry{
-		ActorID:      rejectedBy,
-		ActorType:    "user",
-		Action:       "remediation.rejected",
-		ResourceType: "remediation",
-		ResourceID:   remediationID,
-		AfterState: map[string]any{
-			"status": "rejected",
-		},
+		ActorID: rejectedBy, ActorType: "user", Action: "remediation.rejected", ResourceType: "remediation", ResourceID: remediationID,
+		BeforeState: map[string]any{"status": rem.Status},
+		AfterState:  map[string]any{"status": StateRejected},
 	})
 }
 
 func (s *Service) Cancel(ctx context.Context, remediationID, actor string) error {
-	if err := s.store.UpdateRemediationApproval(ctx, remediationID, "cancelled", ""); err != nil {
+	rem, err := s.store.GetRemediation(ctx, remediationID)
+	if err != nil {
+		return err
+	}
+	if err := RequireTransition(rem.Status, StateCancelled); err != nil {
+		return err
+	}
+	if err := s.store.UpdateRemediationApproval(ctx, remediationID, StateCancelled, ""); err != nil {
 		return err
 	}
 	return s.auditor.Write(ctx, audit.Entry{
-		ActorID:      actor,
-		ActorType:    "user",
-		Action:       "remediation.cancelled",
-		ResourceType: "remediation",
-		ResourceID:   remediationID,
-		AfterState: map[string]any{
-			"status": "cancelled",
-		},
+		ActorID: actor, ActorType: "user", Action: "remediation.cancelled", ResourceType: "remediation", ResourceID: remediationID,
+		BeforeState: map[string]any{"status": rem.Status},
+		AfterState:  map[string]any{"status": StateCancelled},
 	})
 }
 
@@ -177,14 +196,21 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	if err != nil {
 		return err
 	}
-	if remediation.Status == "succeeded" || remediation.Status == "running" || remediation.Status == "queued" {
+	if remediation.Status == StateSucceeded || remediation.Status == StateQueued || remediation.Status == StateRunning {
+		_ = s.auditor.Write(ctx, audit.Entry{
+			ActorID: actor, ActorType: "user", Action: "remediation.execution_reused", ResourceType: "remediation", ResourceID: remediationID,
+			AfterState: map[string]any{"status": remediation.Status, "idempotency_key": remediation.IdempotencyKey},
+		})
 		return nil
 	}
-	if remediation.Status == "awaiting_approval" {
+	if remediation.Status == StateAwaitingApproval {
 		return fmt.Errorf("remediation requires approval")
 	}
-	if remediation.Status == "policy_blocked" || remediation.Status == "rejected" || remediation.Status == "cancelled" {
+	if IsTerminalState(remediation.Status) {
 		return fmt.Errorf("remediation cannot be executed from state %s", remediation.Status)
+	}
+	if err := RequireTransition(remediation.Status, StateQueued); err != nil {
+		return err
 	}
 
 	incident, err := s.store.GetIncident(ctx, remediation.IncidentID)
@@ -192,56 +218,51 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 		return err
 	}
 
+	start := time.Now()
 	outcome, err := s.exec.Execute(ctx, remediation, incident, dryRun)
 	if err != nil {
 		return err
 	}
 
-	switch outcome.Status {
-	case "queued":
-		if err := s.store.MarkRemediationQueued(ctx, remediationID, dryRun); err != nil {
-			return err
-		}
-	case "running":
-		if err := s.store.MarkRemediationQueued(ctx, remediationID, dryRun); err != nil {
-			return err
-		}
-		if err := s.store.MarkRemediationRunning(ctx, remediationID); err != nil {
-			return err
-		}
-	case "succeeded":
-		if err := s.store.MarkRemediationQueued(ctx, remediationID, dryRun); err != nil {
-			return err
-		}
-		if err := s.store.MarkRemediationRunning(ctx, remediationID); err != nil {
-			return err
-		}
-		if err := s.store.CompleteRemediation(ctx, remediationID, "succeeded", outcome.Result, ""); err != nil {
-			return err
-		}
-	case "failed":
-		if err := s.store.CompleteRemediation(ctx, remediationID, "failed", outcome.Result, "executor reported failure"); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unknown execution outcome status %q", outcome.Status)
+	if err := s.applyOutcome(ctx, remediation, outcome, dryRun); err != nil {
+		return err
 	}
+	if strings.EqualFold(outcome.Status, StateFailed) {
+		s.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
+	}
+	s.metrics.RemediationDuration.WithLabelValues(remediation.ActionType).Observe(time.Since(start).Seconds())
 
 	action := "remediation.execute_requested"
-	if strings.EqualFold(outcome.Status, "succeeded") {
+	if strings.EqualFold(outcome.Status, StateSucceeded) {
 		action = "remediation.completed"
 	}
 	return s.auditor.Write(ctx, audit.Entry{
-		ActorID:      actor,
-		ActorType:    "user",
-		Action:       action,
-		ResourceType: "remediation",
-		ResourceID:   remediationID,
-		AfterState: map[string]any{
-			"status":   outcome.Status,
-			"dry_run":  dryRun,
-			"executor": s.exec.Name(),
-			"result":   outcome.Result,
-		},
+		ActorID: actor, ActorType: "user", Action: action, ResourceType: "remediation", ResourceID: remediationID,
+		BeforeState: map[string]any{"status": remediation.Status},
+		AfterState:  map[string]any{"status": outcome.Status, "dry_run": dryRun, "executor": s.exec.Name(), "result": outcome.Result},
 	})
+}
+
+func (s *Service) applyOutcome(ctx context.Context, remediation incidents.RemediationAction, outcome ExecutionOutcome, dryRun bool) error {
+	switch outcome.Status {
+	case StateQueued:
+		return s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun)
+	case StateRunning:
+		if err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun); err != nil {
+			return err
+		}
+		return s.store.MarkRemediationRunning(ctx, remediation.ID)
+	case StateSucceeded:
+		if err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun); err != nil {
+			return err
+		}
+		if err := s.store.MarkRemediationRunning(ctx, remediation.ID); err != nil {
+			return err
+		}
+		return s.store.CompleteRemediation(ctx, remediation.ID, StateSucceeded, outcome.Result, "")
+	case StateFailed:
+		return s.store.CompleteRemediation(ctx, remediation.ID, StateFailed, outcome.Result, "executor reported failure")
+	default:
+		return fmt.Errorf("unknown execution outcome status %q", outcome.Status)
+	}
 }

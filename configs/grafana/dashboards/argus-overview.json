@@ -1,40 +1,273 @@
 {
-  "annotations": {"list": []},
+  "annotations": {
+    "list": []
+  },
   "editable": true,
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "argus",
+    "sre"
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "title": "Argus Control Plane Overview",
+  "version": 2,
+  "templating": {
+    "list": []
+  },
   "panels": [
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {}, "overrides": []},
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
-      "targets": [{"expr": "argus_incidents_total", "refId": "A"}],
+      "targets": [
+        {
+          "expr": "argus_incidents_total",
+          "refId": "A"
+        }
+      ],
       "title": "Argus Incidents Total",
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {}, "overrides": []},
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
       "id": 2,
-      "targets": [{"expr": "argus_remediations_total", "refId": "A"}],
-      "title": "Remediations",
+      "targets": [
+        {
+          "expr": "argus_incidents_open",
+          "refId": "A"
+        }
+      ],
+      "title": "Open Incidents",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "increase(argus_rca_jobs_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "RCA Jobs",
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {}, "overrides": []},
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
-      "id": 3,
-      "targets": [{"expr": "rate(http_requests_total{service=\"payments-api\"}[5m])", "refId": "A"}],
-      "title": "Payments RPS",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "argus_rca_confidence_score_sum / argus_rca_confidence_score_count",
+          "refId": "A"
+        }
+      ],
+      "title": "RCA Confidence",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 7
+      },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "argus_remediations_total",
+          "refId": "A"
+        }
+      ],
+      "title": "Remediations by State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 7
+      },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "increase(argus_policy_denials_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Policy Denials",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 7
+      },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "increase(argus_remediation_failures_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Remediation Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 7
+      },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "increase(argus_llm_requests_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "LLM Requests",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 14
+      },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "argus_worker_heartbeat_age_seconds",
+          "refId": "A"
+        }
+      ],
+      "title": "Worker Heartbeat Age",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 14
+      },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "rate(http_requests_total{service=\"payments-api\"}[5m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Payments API RPS",
       "type": "timeseries"
     }
-  ],
-  "schemaVersion": 39,
-  "style": "dark",
-  "tags": ["argus"],
-  "templating": {"list": []},
-  "time": {"from": "now-6h", "to": "now"},
-  "title": "Argus Control Plane Overview",
-  "version": 1
+  ]
 }

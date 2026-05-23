@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/gauravgs7/argus/internal/audit"
+	"github.com/gauravgs7/argus/internal/auth"
 	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/config"
 	"github.com/gauravgs7/argus/internal/db"
@@ -35,6 +36,7 @@ type Server struct {
 	remediationService *remediation.Service
 	auditor            *audit.Service
 	metrics            *telemetry.Metrics
+	authenticator      *auth.Authenticator
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -55,6 +57,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	}
 
 	metrics := telemetry.MustRegister()
+	authenticator, err := auth.NewAuthenticator(cfg.AuthTokens)
+	if err != nil {
+		return nil, err
+	}
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
 	incidentManager := incidents.NewServiceManager(store, auditor, cfg.IncidentGrouping)
@@ -79,6 +85,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		remediationService: remediationService,
 		auditor:            auditor,
 		metrics:            metrics,
+		authenticator:      authenticator,
 	}, nil
 }
 
@@ -109,7 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/runbooks", s.handleRunbooks)
 	mux.HandleFunc("/v1/runbooks/reindex", s.handleRunbookReindex)
 
-	return s.loggingMiddleware(mux)
+	return s.loggingMiddleware(s.authMiddleware(mux))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +143,7 @@ func (s *Server) handleAlertmanager(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := s.incidentManager.IngestAlertmanager(r.Context(), payload, "alertmanager")
+	created, err := s.incidentManager.IngestAlertmanager(r.Context(), payload, actorFromRequest(r))
 	if err != nil {
 		common.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -317,7 +324,7 @@ func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
 			common.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		actions, err := s.remediationService.Propose(r.Context(), incident, candidates, actorFromRequest(r))
+		actions, err := s.remediationService.Propose(r.Context(), incident, candidates, actorFromRequest(r), roleFromRequest(r))
 		if err != nil {
 			common.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -373,10 +380,8 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			Reason     string `json:"reason"`
 		}
 		_ = common.ReadJSON(r, &body)
-		if body.ApprovedBy == "" {
-			body.ApprovedBy = actorFromRequest(r)
-		}
-		if err := s.remediationService.Approve(r.Context(), remediationID, body.ApprovedBy); err != nil {
+		_ = body
+		if err := s.remediationService.Approve(r.Context(), remediationID, actorFromRequest(r)); err != nil {
 			common.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -485,6 +490,89 @@ func (s *Server) notImplemented(w http.ResponseWriter, r *http.Request) {
 	common.WriteError(w, http.StatusNotImplemented, "not implemented")
 }
 
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isPublicRoute(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		principal, ok := s.authenticator.AuthenticateHeader(auth.BearerToken(r))
+		if !ok {
+			common.WriteError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			return
+		}
+
+		permission := requiredPermission(r)
+		if permission != "" && !principal.Can(permission) {
+			common.WriteError(w, http.StatusForbidden, "role is not allowed to perform this action")
+			return
+		}
+
+		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
+	})
+}
+
+func isPublicRoute(r *http.Request) bool {
+	return r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics"
+}
+
+func requiredPermission(r *http.Request) auth.Permission {
+	path := r.URL.Path
+	method := r.Method
+
+	switch {
+	case path == "/v1/alerts/alertmanager" || path == "/v1/signals/manual":
+		return auth.PermissionIngestSignal
+	case path == "/v1/incidents" && method == http.MethodGet:
+		return auth.PermissionView
+	case path == "/v1/incidents" && method == http.MethodPost:
+		return auth.PermissionManageIncident
+	case strings.HasPrefix(path, "/v1/incidents/"):
+		parts := strings.Split(strings.TrimPrefix(path, "/v1/incidents/"), "/")
+		if len(parts) == 1 && method == http.MethodGet {
+			return auth.PermissionView
+		}
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "timeline", "signals", "rca", "remediations":
+				if method == http.MethodGet {
+					return auth.PermissionView
+				}
+			case "ack", "resolve":
+				return auth.PermissionManageIncident
+			}
+		}
+		if len(parts) == 3 && parts[1] == "rca" && parts[2] == "generate" {
+			return auth.PermissionGenerateRCA
+		}
+		if len(parts) == 3 && parts[1] == "remediations" && parts[2] == "propose" {
+			return auth.PermissionProposeRemediation
+		}
+	case strings.HasPrefix(path, "/v1/remediations/"):
+		parts := strings.Split(strings.TrimPrefix(path, "/v1/remediations/"), "/")
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "approve", "reject":
+				return auth.PermissionApproveRemediation
+			case "execute", "cancel":
+				return auth.PermissionExecuteRemediation
+			}
+		}
+	case path == "/v1/audit":
+		return auth.PermissionViewAudit
+	case path == "/v1/services" && method == http.MethodGet:
+		return auth.PermissionView
+	case path == "/v1/services" && method == http.MethodPost:
+		return auth.PermissionManageService
+	case path == "/v1/runbooks" && method == http.MethodGet:
+		return auth.PermissionView
+	case path == "/v1/runbooks/reindex":
+		return auth.PermissionReindexRunbook
+	}
+	return auth.PermissionView
+}
+
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -503,10 +591,19 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 type ctxKeyRequestID struct{}
 
 func actorFromRequest(r *http.Request) string {
-	if value := r.Header.Get("X-Argus-Actor"); value != "" {
-		return value
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		return "system"
 	}
-	return "admin@local"
+	return principal.Email
+}
+
+func roleFromRequest(r *http.Request) string {
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		return string(auth.RoleOperator)
+	}
+	return string(principal.Role)
 }
 
 func firstHeader(r *http.Request, names ...string) string {

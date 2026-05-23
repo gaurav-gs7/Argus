@@ -1,5 +1,7 @@
 # Demo Scenarios
 
+Committed evidence snapshots live in [demo-evidence](demo-evidence/README.md). Live demo runs write fresh JSON snapshots under `artifacts/demo-evidence/<scenario>/`.
+
 ## PostgreSQL Connection Exhaustion
 
 - symptom: high API latency and 5xx

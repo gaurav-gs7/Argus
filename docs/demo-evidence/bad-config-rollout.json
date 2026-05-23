@@ -1,0 +1,54 @@
+{
+  "scenario": "bad_config_rollout",
+  "incident": {
+    "service": "payments-api",
+    "severity": "sev2",
+    "status": "awaiting_approval",
+    "dedupe_key": "payments-api:bad_config_rollout:local:manual-bad_config_rollout"
+  },
+  "timeline": [
+    {
+      "type": "correlated_evidence",
+      "summary": "configuration rollout preceded service errors",
+      "confidence": 0.85
+    },
+    {
+      "type": "correlated_evidence",
+      "summary": "runtime logs contain config or connection errors",
+      "confidence": 0.85
+    }
+  ],
+  "rca": {
+    "primary_hypothesis": "Bad config rollout introduced an invalid runtime configuration",
+    "confidence": 0.85,
+    "evidence": [
+      "configuration rollout preceded service errors",
+      "runtime logs contain config or connection errors"
+    ]
+  },
+  "remediations": [
+    {
+      "action_type": "rollback_config",
+      "risk": "medium",
+      "status": "awaiting_approval",
+      "requires_approval": true,
+      "policy_reason": "Medium risk remediation requires approval"
+    },
+    {
+      "action_type": "restart_service",
+      "risk": "medium",
+      "status": "awaiting_approval",
+      "requires_approval": true,
+      "policy_reason": "Medium risk remediation requires approval"
+    }
+  ],
+  "audit": [
+    "incident.detected",
+    "remediation.proposed"
+  ],
+  "safety_notes": [
+    "LLM is advisory only",
+    "Policy has final authority",
+    "Actions are typed handlers, not arbitrary shell commands"
+  ]
+}

@@ -14,6 +14,7 @@ type Metrics struct {
 	LLMRequestsTotal          *prometheus.CounterVec
 	LLMRequestDuration        *prometheus.HistogramVec
 	WorkerHeartbeatAgeSeconds *prometheus.GaugeVec
+	RCAConfidence             *prometheus.HistogramVec
 }
 
 func MustRegister() *Metrics {
@@ -65,6 +66,11 @@ func MustRegister() *Metrics {
 			Name: "argus_worker_heartbeat_age_seconds",
 			Help: "Age of latest worker heartbeat",
 		}, []string{"worker_id"}),
+		RCAConfidence: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "argus_rca_confidence_score",
+			Help:    "Deterministic RCA confidence score by primary hypothesis",
+			Buckets: []float64{0.25, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0},
+		}, []string{"hypothesis"}),
 	}
 
 	prometheus.MustRegister(
@@ -79,6 +85,7 @@ func MustRegister() *Metrics {
 		m.LLMRequestsTotal,
 		m.LLMRequestDuration,
 		m.WorkerHeartbeatAgeSeconds,
+		m.RCAConfidence,
 	)
 
 	return m

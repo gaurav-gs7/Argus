@@ -1,0 +1,47 @@
+{
+  "scenario": "dependency_latency",
+  "incident": {
+    "service": "payments-api",
+    "severity": "sev2",
+    "status": "awaiting_approval",
+    "dedupe_key": "payments-api:dependency_latency:local:manual-dependency_latency"
+  },
+  "timeline": [
+    {
+      "type": "correlated_evidence",
+      "summary": "downstream dependency latency dominates the request path",
+      "confidence": 0.76
+    },
+    {
+      "type": "correlated_evidence",
+      "summary": "p95 latency increased before failure rate dominated",
+      "confidence": 0.76
+    }
+  ],
+  "rca": {
+    "primary_hypothesis": "Downstream dependency latency dominates the request path",
+    "confidence": 0.76,
+    "evidence": [
+      "downstream dependency latency dominates the request path",
+      "p95 latency increased before failure rate dominated"
+    ]
+  },
+  "remediations": [
+    {
+      "action_type": "revert_feature_flag",
+      "risk": "medium",
+      "status": "awaiting_approval",
+      "requires_approval": true,
+      "policy_reason": "Medium risk remediation requires approval"
+    }
+  ],
+  "audit": [
+    "incident.detected",
+    "remediation.proposed"
+  ],
+  "safety_notes": [
+    "LLM is advisory only",
+    "Policy has final authority",
+    "Actions are typed handlers, not arbitrary shell commands"
+  ]
+}

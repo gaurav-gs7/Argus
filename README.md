@@ -58,8 +58,9 @@ Observability signals -> Argus API -> Incident Manager -> RCA Engine -> Policy E
 cp .env.example .env
 make up
 make seed
+export ARGUS_API_TOKEN=local-admin-token
 curl http://localhost:8080/healthz
-curl http://localhost:8080/v1/incidents
+curl -H "Authorization: Bearer local-viewer-token" http://localhost:8080/v1/incidents
 ```
 
 ## One-Command Demo
@@ -75,6 +76,7 @@ That flow:
 - creates or reuses an incident
 - generates deterministic RCA
 - proposes policy-gated remediation
+- writes JSON evidence under `artifacts/demo-evidence/postgres_connection_exhaustion/`
 
 ## Local Profiles
 
@@ -101,6 +103,16 @@ Full profile:
 - failure-injector
 - optional ollama
 
+## Local RBAC
+
+Argus uses simple local Bearer tokens for demo-safe RBAC:
+
+- `local-admin-token`: admin, full access
+- `local-operator-token`: operator, incident/RCA/remediation workflow access
+- `local-viewer-token`: viewer, read-only access
+
+Configure tokens with `ARGUS_AUTH_TOKENS` using `token:role:email` entries. Health, readiness, and metrics stay public for local probes; `/v1/*` APIs require `Authorization: Bearer <token>`.
+
 ## Safety Model
 
 - no arbitrary shell execution from the API
@@ -119,10 +131,10 @@ This repository includes:
 
 - Go API, worker, CLI, and failure injector
 - deterministic incident ingestion and deduplication
-- deterministic RCA scaffolding
+- deterministic incident correlation and RCA scoring
 - advisory AI service with `mock`, `ollama`, and `gemini` adapters
 - local observability configuration
 - Docker Compose profiles
-- docs, ADRs, migrations, scripts, and baseline tests
+- docs, ADRs, migrations, scripts, committed demo evidence, dashboards, alerts, and CI checks
 
-See [docs/architecture.md](/Users/gauravgs7/Documents/Projects/Argus/docs/architecture.md), [docs/local-dev.md](/Users/gauravgs7/Documents/Projects/Argus/docs/local-dev.md), and [docs/remediation-safety.md](/Users/gauravgs7/Documents/Projects/Argus/docs/remediation-safety.md).
+See [docs/architecture.md](docs/architecture.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).

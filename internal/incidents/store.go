@@ -416,17 +416,10 @@ func (s *Store) GetRemediation(ctx context.Context, remediationID string) (Remed
 		WHERE id = $1
 	`, remediationID)
 
-	var item RemediationAction
-	var policyJSON, resultJSON []byte
-	if err := row.Scan(
-		&item.ID, &item.IncidentID, &item.ActionType, &item.Target, &item.Status, &item.Risk, &item.IdempotencyKey,
-		&item.ProposedBy, &item.ApprovedBy, &policyJSON, &item.DryRun, &item.Attempt, &item.MaxAttempts,
-		&item.QueuedAt, &item.StartedAt, &item.CompletedAt, &resultJSON, &item.Error, &item.CreatedAt,
-	); err != nil {
+	item, err := scanRemediation(row)
+	if err != nil {
 		return RemediationAction{}, fmt.Errorf("get remediation: %w", err)
 	}
-	_ = json.Unmarshal(policyJSON, &item.PolicyDecision)
-	_ = json.Unmarshal(resultJSON, &item.Result)
 	return item, nil
 }
 
@@ -446,10 +439,50 @@ func (s *Store) CountRecentSimilarRemediations(ctx context.Context, incidentID, 
 	return count, nil
 }
 
+func (s *Store) FindActiveRemediationByAction(ctx context.Context, incidentID, actionType, target string) (*RemediationAction, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, incident_id, action_type, target, status, risk, idempotency_key,
+		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
+		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
+		FROM remediation_actions
+		WHERE incident_id = $1
+		  AND action_type = $2
+		  AND target = $3
+		  AND status NOT IN ('policy_blocked', 'rejected', 'succeeded', 'failed', 'timed_out', 'cancelled')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, incidentID, actionType, target)
+
+	item, err := scanRemediation(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find active remediation: %w", err)
+	}
+	return &item, nil
+}
+
+func (s *Store) CountFailedRemediations(ctx context.Context, incidentID, actionType, target string) (int, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM remediation_actions
+		WHERE incident_id = $1
+		  AND action_type = $2
+		  AND target = $3
+		  AND status IN ('failed', 'timed_out')
+	`, incidentID, actionType, target)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("count failed remediations: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) UpdateRemediationApproval(ctx context.Context, remediationID, status, approvedBy string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE remediation_actions
-		SET status = $2, approved_by = NULLIF($3, ''), dry_run = FALSE
+		SET status = $2, approved_by = NULLIF($3, '')
 		WHERE id = $1
 	`, remediationID, status, approvedBy)
 	if err != nil {
@@ -565,6 +598,25 @@ func (s *Store) UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname st
 		return fmt.Errorf("upsert worker heartbeat: %w", err)
 	}
 	return nil
+}
+
+type remediationScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRemediation(row remediationScanner) (RemediationAction, error) {
+	var item RemediationAction
+	var policyJSON, resultJSON []byte
+	if err := row.Scan(
+		&item.ID, &item.IncidentID, &item.ActionType, &item.Target, &item.Status, &item.Risk, &item.IdempotencyKey,
+		&item.ProposedBy, &item.ApprovedBy, &policyJSON, &item.DryRun, &item.Attempt, &item.MaxAttempts,
+		&item.QueuedAt, &item.StartedAt, &item.CompletedAt, &resultJSON, &item.Error, &item.CreatedAt,
+	); err != nil {
+		return RemediationAction{}, err
+	}
+	_ = json.Unmarshal(policyJSON, &item.PolicyDecision)
+	_ = json.Unmarshal(resultJSON, &item.Result)
+	return item, nil
 }
 
 func defaultSeverity(value string) string {
