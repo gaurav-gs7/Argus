@@ -1,0 +1,4 @@
+name: bad_config_rollout
+service: payments-api
+severity: sev2
+summary: bad config rollout likely broke runtime connectivity

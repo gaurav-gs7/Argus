@@ -1,0 +1,4 @@
+name: dependency_latency
+service: payments-api
+severity: sev3
+summary: downstream notification latency is dominating request time

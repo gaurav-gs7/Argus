@@ -1,0 +1,33 @@
+groups:
+  - name: payments-api
+    rules:
+      - alert: PaymentsAPIHighErrorRate
+        expr: rate(http_requests_total{service="payments-api",status=~"5.."}[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: sev2
+          service: payments-api
+          environment: local
+        annotations:
+          summary: "High 5xx rate on payments-api"
+          runbook: "postgres-connection-exhaustion"
+
+      - alert: PaymentsAPIHighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{service="payments-api"}[5m])) > 0.8
+        for: 3m
+        labels:
+          severity: sev3
+          service: payments-api
+          environment: local
+        annotations:
+          summary: "High p95 latency on payments-api"
+
+      - alert: PaymentsAPIPostgresPoolSaturation
+        expr: db_connection_pool_in_use / db_connection_pool_max > 0.9
+        for: 1m
+        labels:
+          severity: sev2
+          service: payments-api
+          environment: local
+        annotations:
+          summary: "payments-api postgres pool saturation"

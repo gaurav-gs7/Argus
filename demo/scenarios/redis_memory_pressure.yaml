@@ -1,0 +1,4 @@
+name: redis_memory_pressure
+service: payments-api
+severity: sev2
+summary: payments-api cache layer is degraded by redis memory pressure

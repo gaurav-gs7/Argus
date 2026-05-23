@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS remediation_actions (
+    id TEXT PRIMARY KEY,
+    incident_id TEXT REFERENCES incidents(id),
+    action_type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL,
+    risk TEXT NOT NULL CHECK (risk IN ('low', 'medium', 'high')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    proposed_by TEXT NOT NULL,
+    approved_by TEXT,
+    policy_decision JSONB NOT NULL,
+    dry_run BOOLEAN NOT NULL DEFAULT true,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    max_attempts INTEGER NOT NULL DEFAULT 1,
+    queued_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    result JSONB,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

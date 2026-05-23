@@ -1,0 +1,8 @@
+env: local
+grouping_window: 5m
+policy:
+  block_high_risk: true
+  require_approval_for_medium_risk: true
+llm:
+  default_backend: mock
+  ollama_model: qwen2.5:1.5b

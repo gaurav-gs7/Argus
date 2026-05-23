@@ -1,0 +1,4 @@
+name: nginx_5xx_spike
+service: nginx
+severity: sev2
+summary: nginx is returning elevated 5xx responses

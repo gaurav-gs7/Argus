@@ -1,0 +1,4 @@
+name: postgres_connection_exhaustion
+service: payments-api
+severity: sev2
+summary: payments-api is hitting postgres connection pool saturation

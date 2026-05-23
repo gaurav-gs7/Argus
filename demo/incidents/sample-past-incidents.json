@@ -1,0 +1,16 @@
+[
+  {
+    "id": "past_inc_1",
+    "title": "Payments latency spike from postgres pool exhaustion",
+    "service": "payments-api",
+    "primary_hypothesis": "PostgreSQL connection pool exhaustion",
+    "resolution": "Drained stuck demo sessions and restarted the service"
+  },
+  {
+    "id": "past_inc_2",
+    "title": "Nginx edge 5xx due to bad route config",
+    "service": "nginx",
+    "primary_hypothesis": "Bad upstream config",
+    "resolution": "Rolled back config and reloaded nginx"
+  }
+]

@@ -1,0 +1,37 @@
+services:
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./configs/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    ports:
+      - "9093:9093"
+
+  notification-api:
+    build:
+      context: ./demo/services/notification-api
+    environment:
+      NOTIFICATION_API_ADDR: :9002
+    ports:
+      - "9002:9002"
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./demo/services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8088:8088"
+    depends_on:
+      - payments-api
+
+  failure-injector:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.injector
+    environment:
+      PAYMENTS_API_BASE_URL: http://payments-api:9001
+      ARGUS_API_BASE_URL: http://argus-api:8080
+    depends_on:
+      - payments-api
+      - argus-api

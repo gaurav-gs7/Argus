@@ -1,0 +1,7 @@
+route:
+  receiver: argus
+
+receivers:
+  - name: argus
+    webhook_configs:
+      - url: http://argus-api:8080/v1/alerts/alertmanager
