@@ -138,3 +138,7 @@ This repository includes:
 - docs, ADRs, migrations, scripts, committed demo evidence, dashboards, alerts, and CI checks
 
 See [docs/architecture.md](docs/architecture.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
+
+## License
+
+This project is licensed under the Apache License 2.0. You may use, modify, and distribute the code, including for commercial purposes, as long as you preserve the license notice and include any required attribution. The software is provided without warranties or liability. See [LICENSE](LICENSE) for the full terms.
