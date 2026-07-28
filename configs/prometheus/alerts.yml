@@ -66,3 +66,69 @@ groups:
         annotations:
           summary: "Argus RCA generation is failing"
           runbook: "incident-lifecycle"
+
+      - alert: ArgusAIAdvisoryLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(argus_ai_advisory_latency_seconds_bucket[10m]))) > 10
+        for: 5m
+        labels:
+          severity: sev3
+          service: argus-ai
+          environment: local
+        annotations:
+          summary: "Argus AI advisory p95 latency exceeds 10 seconds"
+          runbook: "llm-design"
+
+      - alert: ArgusAIGovernanceUnavailable
+        expr: increase(argus_ai_governance_decisions_total{decision="unavailable"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: sev2
+          service: argus-ai
+          environment: local
+        annotations:
+          summary: "Verdikt governance is unavailable; AI proposals are failing closed"
+          runbook: "remediation-safety"
+
+      - alert: ArgusPromptInjectionDetected
+        expr: increase(argus_ai_prompt_injection_blocks_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: sev3
+          service: argus-ai
+          environment: local
+        annotations:
+          summary: "Argus blocked prompt-injection content in incident evidence"
+          runbook: "llm-design"
+
+      - alert: ArgusApprovalPendingTooLong
+        expr: argus_approvals_pending > 0
+        for: 10m
+        labels:
+          severity: sev3
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus has remediation approvals waiting longer than the response SLO"
+          runbook: "remediation-safety"
+
+      - alert: ArgusApprovalNotificationFailing
+        expr: increase(argus_approval_notification_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: sev2
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus cannot deliver approval notifications"
+          runbook: "remediation-safety"
+
+      - alert: ArgusApprovalExpired
+        expr: increase(argus_approval_requests_total{status="expired"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: sev2
+          service: argus
+          environment: local
+        annotations:
+          summary: "A remediation timed out without a human approval decision"
+          runbook: "remediation-safety"

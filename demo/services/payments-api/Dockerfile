@@ -1,9 +1,11 @@
 FROM golang:1.23-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/payments-api ./main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-arm64} go build -o /out/payments-api ./main.go
 
 FROM alpine:3.20
 RUN adduser -D -u 10001 app

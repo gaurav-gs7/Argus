@@ -39,6 +39,7 @@ func CanTransition(from, to string) bool {
 		StateAwaitingApproval: {
 			StateApproved:  true,
 			StateRejected:  true,
+			StateTimedOut:  true,
 			StateCancelled: true,
 		},
 		StateApproved: {

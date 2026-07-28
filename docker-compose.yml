@@ -44,12 +44,25 @@ services:
       ARGUS_NATS_URL: nats://nats:4222
       ARGUS_LLM_BACKEND: mock
       ARGUS_AI_SERVICE_URL: http://argus-ai:8090
+      ARGUS_AI_SERVICE_TOKEN: ${ARGUS_AI_SERVICE_TOKEN:-argus-ai-local}
       ARGUS_AUTH_TOKENS: ${ARGUS_AUTH_TOKENS:-local-admin-token:admin:admin@local,local-operator-token:operator:operator@local,local-viewer-token:viewer:viewer@local}
       ARGUS_LOG_LEVEL: INFO
       ARGUS_REMEDIATION_EXECUTOR: ${ARGUS_REMEDIATION_EXECUTOR:-local}
       ARGUS_HELIOS_BASE_URL: ${ARGUS_HELIOS_BASE_URL:-}
       ARGUS_HELIOS_ADMIN_TOKEN: ${ARGUS_HELIOS_ADMIN_TOKEN:-}
       ARGUS_HELIOS_POLL_TIMEOUT: ${ARGUS_HELIOS_POLL_TIMEOUT:-8s}
+      ARGUS_APPROVAL_WEBHOOK_URL: ${ARGUS_APPROVAL_WEBHOOK_URL:-}
+      ARGUS_APPROVAL_WEBHOOK_MODE: ${ARGUS_APPROVAL_WEBHOOK_MODE:-generic}
+      ARGUS_APPROVAL_WEBHOOK_SECRET: ${ARGUS_APPROVAL_WEBHOOK_SECRET:-}
+      ARGUS_APPROVAL_CALLBACK_BASE_URL: ${ARGUS_APPROVAL_CALLBACK_BASE_URL:-http://localhost:8080}
+      ARGUS_APPROVAL_TIMEOUT: ${ARGUS_APPROVAL_TIMEOUT:-15m}
+      ARGUS_APPROVAL_ESCALATE_AFTER: ${ARGUS_APPROVAL_ESCALATE_AFTER:-5m}
+      ARGUS_APPROVAL_SWEEP_INTERVAL: ${ARGUS_APPROVAL_SWEEP_INTERVAL:-15s}
+      ARGUS_APPROVAL_NOTIFY_TIMEOUT: ${ARGUS_APPROVAL_NOTIFY_TIMEOUT:-3s}
+      ARGUS_APPROVAL_ALLOW_SELF_APPROVAL: ${ARGUS_APPROVAL_ALLOW_SELF_APPROVAL:-false}
+      ARGUS_SLACK_SIGNING_SECRET: ${ARGUS_SLACK_SIGNING_SECRET:-}
+      ARGUS_SLACK_BOT_TOKEN: ${ARGUS_SLACK_BOT_TOKEN:-}
+      ARGUS_SLACK_APPROVERS: ${ARGUS_SLACK_APPROVERS:-}
     ports:
       - "8080:8080"
     depends_on:
@@ -79,6 +92,25 @@ services:
       nats:
         condition: service_started
 
+  verdikt:
+    mem_limit: 192m
+    cpus: 0.35
+    build:
+      context: ${VERDIKT_BUILD_CONTEXT:-../Verdikt}
+      dockerfile: Dockerfile.argus
+    environment:
+      VERDIKT_API_TOKEN: ${ARGUS_VERDIKT_API_TOKEN:-argus-verdikt-local}
+      VERDIKT_TELEMETRY: disabled
+    volumes:
+      - verdikt-data:/app/data
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   argus-ai:
     mem_limit: 256m
     cpus: 0.50
@@ -87,17 +119,26 @@ services:
     environment:
       ARGUS_AI_ADDR: :8090
       ARGUS_LLM_BACKEND: mock
+      ARGUS_AI_SERVICE_TOKEN: ${ARGUS_AI_SERVICE_TOKEN:-argus-ai-local}
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: qwen2.5:1.5b
       ARGUS_RUNBOOK_PATH: /data/runbooks
       ARGUS_PAST_INCIDENTS_PATH: /data/incidents/sample-past-incidents.json
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash-lite}
+      ARGUS_VERDIKT_URL: http://verdikt:8080
+      ARGUS_VERDIKT_API_TOKEN: ${ARGUS_VERDIKT_API_TOKEN:-argus-verdikt-local}
+      ARGUS_VERDIKT_TIMEOUT_SECONDS: ${ARGUS_VERDIKT_TIMEOUT_SECONDS:-3}
+      ARGUS_LLM_INPUT_COST_PER_MILLION_USD: ${ARGUS_LLM_INPUT_COST_PER_MILLION_USD:-0}
+      ARGUS_LLM_OUTPUT_COST_PER_MILLION_USD: ${ARGUS_LLM_OUTPUT_COST_PER_MILLION_USD:-0}
     volumes:
       - ./demo/runbooks:/data/runbooks:ro
       - ./demo/incidents:/data/incidents:ro
     ports:
       - "8090:8090"
+    depends_on:
+      verdikt:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -150,6 +191,9 @@ services:
       SERVICE_NAME: payments-api
     ports:
       - "9001:9001"
+
+volumes:
+  verdikt-data:
 
 networks:
   default:

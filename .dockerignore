@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.gocache
+.gomodcache
+.pytest_cache
+**/__pycache__
+**/*.pyc
+artifacts
+docs
+ai-service
+configs
+demo/incidents
+demo/runbooks
+tests
+*.md

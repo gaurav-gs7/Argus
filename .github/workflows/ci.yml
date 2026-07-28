@@ -19,14 +19,47 @@ jobs:
         run: test -z "$(gofmt -l ./cmd ./internal ./demo/services)"
       - name: Run Go vet
         run: go vet ./...
-      - name: Run Go tests
-        run: go test ./...
+      - name: Run Go tests with race detector
+        run: go test -race ./...
+      - name: Install Python AI service dependencies
+        run: python -m pip install -r ai-service/requirements.txt
       - name: Compile Python AI service
-        run: PYTHONPYCACHEPREFIX=/tmp/argus-pycache python -m compileall -q ai-service/app
+        run: PYTHONPYCACHEPREFIX=/tmp/argus-pycache python -m compileall -q ai-service/app ai-service/tests
+      - name: Run AI governance and prompt-injection tests
+        run: PYTHONPATH=ai-service python -m unittest discover -s ai-service/tests -v
       - name: Validate Docker Compose configs
         run: |
           docker compose config >/dev/null
           docker compose -f docker-compose.yml -f docker-compose.full.yml config >/dev/null
+      - name: Validate shell and JSON artifacts
+        run: |
+          bash -n scripts/*.sh
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          paths = [
+              *Path("configs/grafana/dashboards").glob("*.json"),
+              *Path("docs/demo-evidence").glob("*.json"),
+          ]
+          for path in paths:
+              with path.open(encoding="utf-8") as handle:
+                  json.load(handle)
+          print(f"validated {len(paths)} JSON artifacts")
+          PY
+      - name: Validate Prometheus and Alertmanager configs
+        run: |
+          docker run --rm --entrypoint /bin/promtool \
+            -v "$PWD/configs/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.53.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint /bin/amtool \
+            -v "$PWD/configs/alertmanager:/etc/alertmanager:ro" \
+            prom/alertmanager:v0.27.0 check-config /etc/alertmanager/alertmanager.yml
+      - name: Build production images
+        run: |
+          docker build -f Dockerfile.api -t argus-api:ci .
+          docker build -f Dockerfile.worker -t argus-worker:ci .
+          docker build -t argus-ai:ci ai-service
       - name: Check docs are portable
         run: python scripts/check-portable-docs.py
 
@@ -39,3 +72,29 @@ jobs:
           go-version: "1.23.0"
       - name: Test PostgreSQL and JetStream boundaries
         run: make integration-test
+
+  approval-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: argus
+          POSTGRES_PASSWORD: argus
+          POSTGRES_DB: argus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U argus -d argus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.0"
+      - name: Test durable approval transaction
+        env:
+          ARGUS_INTEGRATION_POSTGRES_DSN: postgres://argus:argus@localhost:5432/argus?sslmode=disable
+        run: go test -race ./tests/integration -v

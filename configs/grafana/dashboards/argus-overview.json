@@ -14,7 +14,7 @@
     "to": "now"
   },
   "title": "Argus Control Plane Overview",
-  "version": 2,
+  "version": 3,
   "templating": {
     "list": []
   },
@@ -267,6 +267,256 @@
         }
       ],
       "title": "Payments API RPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 21
+      },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(argus_ai_advisory_latency_seconds_bucket[5m])))",
+          "refId": "A"
+        }
+      ],
+      "title": "AI Advisory p95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 21
+      },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "increase(argus_ai_tokens_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "AI Tokens by Direction",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 21
+      },
+      "id": 13,
+      "targets": [
+        {
+          "expr": "increase(argus_ai_estimated_cost_usd_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "AI Estimated Cost (USD)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 21
+      },
+      "id": 14,
+      "targets": [
+        {
+          "expr": "argus_ai_advisory_confidence_score_sum / argus_ai_advisory_confidence_score_count",
+          "refId": "A"
+        }
+      ],
+      "title": "AI Advisory Confidence",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 28
+      },
+      "id": 15,
+      "targets": [
+        {
+          "expr": "increase(argus_ai_governance_decisions_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Verdikt Proposal Decisions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 28
+      },
+      "id": 16,
+      "targets": [
+        {
+          "expr": "increase(argus_ai_prompt_injection_blocks_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Prompt Injection Blocks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 35
+      },
+      "id": 17,
+      "targets": [
+        {
+          "expr": "argus_approvals_pending",
+          "refId": "A"
+        }
+      ],
+      "title": "Pending Human Approvals",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 35
+      },
+      "id": 18,
+      "targets": [
+        {
+          "expr": "increase(argus_approval_requests_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Approval Decisions by Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 35
+      },
+      "id": 19,
+      "targets": [
+        {
+          "expr": "increase(argus_approval_escalations_total[15m])",
+          "refId": "A"
+        }
+      ],
+      "title": "Approval Escalations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 35
+      },
+      "id": 20,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(argus_approval_decision_duration_seconds_bucket[15m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Human Decision p95",
       "type": "timeseries"
     }
   ]

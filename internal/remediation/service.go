@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gauravgs7/argus/internal/approvals"
 	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/incidents"
@@ -16,18 +17,19 @@ import (
 )
 
 type Service struct {
-	store   *incidents.Store
-	auditor *audit.Service
-	policy  *policy.Engine
-	metrics *telemetry.Metrics
-	exec    Executor
+	store     *incidents.Store
+	auditor   *audit.Service
+	policy    *policy.Engine
+	metrics   *telemetry.Metrics
+	exec      Executor
+	approvals approvals.Workflow
 }
 
-func NewService(store *incidents.Store, auditor *audit.Service, policyEngine *policy.Engine, queueClient *queue.Client, executor Executor, metrics *telemetry.Metrics) *Service {
+func NewService(store *incidents.Store, auditor *audit.Service, policyEngine *policy.Engine, queueClient *queue.Client, executor Executor, metrics *telemetry.Metrics, approvalWorkflow approvals.Workflow) *Service {
 	if executor == nil {
 		executor = NewLocalExecutor(queueClient)
 	}
-	return &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor}
+	return &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor, approvals: approvalWorkflow}
 }
 
 func BuildIdempotencyKey(incidentID, actionType, target string, attempt int) string {
@@ -42,6 +44,11 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		if existing, err := s.store.FindActiveRemediationByAction(ctx, incident.ID, candidate.ActionType, candidate.Target); err != nil {
 			return nil, err
 		} else if existing != nil {
+			if existing.Status == StateAwaitingApproval && s.approvals != nil {
+				if _, err := s.approvals.RequestApproval(ctx, incident, *existing); err != nil {
+					return nil, err
+				}
+			}
 			actions = append(actions, *existing)
 			_ = s.auditor.Write(ctx, audit.Entry{
 				ActorID: actor, ActorType: "user", Action: "remediation.proposal_reused", ResourceType: "remediation", ResourceID: existing.ID,
@@ -117,6 +124,14 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		if err := s.store.CreateRemediation(ctx, action); err != nil {
 			return nil, err
 		}
+		if action.Status == StateAwaitingApproval {
+			if s.approvals == nil {
+				return nil, fmt.Errorf("approval workflow is unavailable")
+			}
+			if _, err := s.approvals.RequestApproval(ctx, incident, action); err != nil {
+				return nil, err
+			}
+		}
 		actions = append(actions, action)
 		s.metrics.RemediationsTotal.WithLabelValues(action.ActionType, action.Status).Inc()
 
@@ -137,45 +152,32 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 	return actions, nil
 }
 
-func (s *Service) Approve(ctx context.Context, remediationID, approvedBy string) error {
-	rem, err := s.store.GetRemediation(ctx, remediationID)
-	if err != nil {
-		return err
+func (s *Service) Approve(ctx context.Context, remediationID, approvedBy, reason string) error {
+	if s.approvals == nil {
+		return fmt.Errorf("approval workflow is unavailable")
 	}
-	if err := RequireTransition(rem.Status, StateApproved); err != nil {
-		return err
-	}
-	if err := s.store.UpdateRemediationApproval(ctx, remediationID, StateApproved, approvedBy); err != nil {
-		return err
-	}
-	return s.auditor.Write(ctx, audit.Entry{
-		ActorID: approvedBy, ActorType: "user", Action: "remediation.approved", ResourceType: "remediation", ResourceID: remediationID,
-		BeforeState: map[string]any{"status": rem.Status},
-		AfterState:  map[string]any{"status": StateApproved, "approved_by": approvedBy},
-	})
+	_, err := s.approvals.DecideByRemediation(ctx, remediationID, approvedBy, "user", approvals.DecisionApprove, reason)
+	return err
 }
 
-func (s *Service) Reject(ctx context.Context, remediationID, rejectedBy string) error {
-	rem, err := s.store.GetRemediation(ctx, remediationID)
-	if err != nil {
-		return err
+func (s *Service) Reject(ctx context.Context, remediationID, rejectedBy, reason string) error {
+	if s.approvals == nil {
+		return fmt.Errorf("approval workflow is unavailable")
 	}
-	if err := RequireTransition(rem.Status, StateRejected); err != nil {
-		return err
-	}
-	if err := s.store.UpdateRemediationApproval(ctx, remediationID, StateRejected, ""); err != nil {
-		return err
-	}
-	return s.auditor.Write(ctx, audit.Entry{
-		ActorID: rejectedBy, ActorType: "user", Action: "remediation.rejected", ResourceType: "remediation", ResourceID: remediationID,
-		BeforeState: map[string]any{"status": rem.Status},
-		AfterState:  map[string]any{"status": StateRejected},
-	})
+	_, err := s.approvals.DecideByRemediation(ctx, remediationID, rejectedBy, "user", approvals.DecisionDeny, reason)
+	return err
 }
 
 func (s *Service) Cancel(ctx context.Context, remediationID, actor string) error {
 	rem, err := s.store.GetRemediation(ctx, remediationID)
 	if err != nil {
+		return err
+	}
+	if rem.Status == StateAwaitingApproval {
+		if s.approvals == nil {
+			return fmt.Errorf("approval workflow is unavailable")
+		}
+		_, err := s.approvals.CancelByRemediation(ctx, remediationID, actor, "remediation cancelled by operator")
 		return err
 	}
 	if err := RequireTransition(rem.Status, StateCancelled); err != nil {

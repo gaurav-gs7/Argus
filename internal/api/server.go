@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/gauravgs7/argus/internal/approvals"
 	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/auth"
 	"github.com/gauravgs7/argus/internal/common"
@@ -37,6 +39,9 @@ type Server struct {
 	auditor            *audit.Service
 	metrics            *telemetry.Metrics
 	authenticator      *auth.Authenticator
+	approvalService    *approvals.Service
+	approvalCancel     context.CancelFunc
+	slackApproval      *approvals.SlackWorkflow
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -63,8 +68,44 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	}
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
+	approvalStore := approvals.NewStore(database)
+	approvalNotifier, err := approvals.NewWebhookNotifier(
+		cfg.ApprovalWebhookURL,
+		cfg.ApprovalWebhookSecret,
+		cfg.ApprovalCallbackBaseURL,
+		cfg.ApprovalWebhookMode,
+		cfg.ApprovalNotifyTimeout,
+	)
+	if err != nil {
+		return nil, err
+	}
+	approvalService := approvals.NewService(
+		approvalStore,
+		approvalNotifier,
+		metrics,
+		logger,
+		cfg.ApprovalTimeout,
+		cfg.ApprovalEscalateAfter,
+		cfg.ApprovalSweepInterval,
+		cfg.ApprovalAllowSelf,
+	)
+	slackApproval, err := approvals.NewSlackWorkflow(
+		approvalService,
+		cfg.ApprovalSlackSigningSecret,
+		cfg.ApprovalSlackBotToken,
+		cfg.ApprovalSlackApprovers,
+		cfg.ApprovalNotifyTimeout,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ApprovalWebhookURL != "" && cfg.ApprovalWebhookMode == "slack" && !slackApproval.Enabled() {
+		return nil, fmt.Errorf("Slack approval delivery requires signing secret, bot token, and approver identity mappings")
+	}
+	approvalContext, approvalCancel := context.WithCancel(context.Background())
+	approvalService.Start(approvalContext)
 	incidentManager := incidents.NewServiceManager(store, auditor, cfg.IncidentGrouping)
-	rcaService := rca.NewService(store, cfg.AIServiceURL, metrics)
+	rcaService := rca.NewService(store, cfg.AIServiceURL, cfg.AIServiceToken, metrics)
 	var executor remediation.Executor
 	switch cfg.RemediationExecutor {
 	case "helios":
@@ -72,7 +113,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	default:
 		executor = remediation.NewLocalExecutor(queueClient)
 	}
-	remediationService := remediation.NewService(store, auditor, policy.NewEngine(), queueClient, executor, metrics)
+	remediationService := remediation.NewService(store, auditor, policy.NewEngine(), queueClient, executor, metrics, approvalService)
 
 	return &Server{
 		cfg:                cfg,
@@ -86,10 +127,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		auditor:            auditor,
 		metrics:            metrics,
 		authenticator:      authenticator,
+		approvalService:    approvalService,
+		approvalCancel:     approvalCancel,
+		slackApproval:      slackApproval,
 	}, nil
 }
 
 func (s *Server) Close() error {
+	if s.approvalCancel != nil {
+		s.approvalCancel()
+	}
 	if s.queue != nil {
 		s.queue.Close()
 	}
@@ -111,6 +158,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/incidents", s.handleIncidents)
 	mux.HandleFunc("/v1/incidents/", s.handleIncidentRoutes)
 	mux.HandleFunc("/v1/remediations/", s.handleRemediationRoutes)
+	mux.HandleFunc("/v1/approval-requests", s.handleApprovalRequests)
+	mux.HandleFunc("/v1/approval-requests/", s.handleApprovalRequests)
+	mux.HandleFunc("/v1/approval-callbacks/slack", s.handleSlackApprovalCallback)
 	mux.HandleFunc("/v1/audit", s.handleAudit)
 	mux.HandleFunc("/v1/services", s.handleServices)
 	mux.HandleFunc("/v1/runbooks", s.handleRunbooks)
@@ -313,6 +363,16 @@ func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 3 && parts[1] == "remediations" && parts[2] == "suggest" && r.Method == http.MethodPost {
+		suggestions, err := s.rcaService.SuggestRemediations(r.Context(), incidentID)
+		if err != nil {
+			common.WriteError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		common.WriteJSON(w, http.StatusOK, suggestions)
+		return
+	}
+
 	if len(parts) == 3 && parts[1] == "remediations" && parts[2] == "propose" && r.Method == http.MethodPost {
 		incident, err := s.store.GetIncident(r.Context(), incidentID)
 		if err != nil {
@@ -376,13 +436,14 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		var body struct {
-			ApprovedBy string `json:"approved_by"`
-			Reason     string `json:"reason"`
+			Reason string `json:"reason"`
 		}
-		_ = common.ReadJSON(r, &body)
-		_ = body
-		if err := s.remediationService.Approve(r.Context(), remediationID, actorFromRequest(r)); err != nil {
-			common.WriteError(w, http.StatusInternalServerError, err.Error())
+		if err := common.ReadJSON(r, &body); err != nil {
+			common.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.remediationService.Approve(r.Context(), remediationID, actorFromRequest(r), body.Reason); err != nil {
+			common.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		common.WriteJSON(w, http.StatusOK, map[string]string{"status": "approved"})
@@ -391,8 +452,15 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		if err := s.remediationService.Reject(r.Context(), remediationID, actorFromRequest(r)); err != nil {
-			common.WriteError(w, http.StatusInternalServerError, err.Error())
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		if err := common.ReadJSON(r, &body); err != nil {
+			common.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.remediationService.Reject(r.Context(), remediationID, actorFromRequest(r), body.Reason); err != nil {
+			common.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		common.WriteJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
@@ -426,6 +494,75 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 	default:
 		common.WriteError(w, http.StatusNotFound, "unknown remediation action")
 	}
+}
+
+func (s *Server) handleApprovalRequests(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/approval-requests")
+	if path == "" || path == "/" {
+		if r.Method != http.MethodGet {
+			common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		items, err := s.approvalService.List(r.Context(), r.URL.Query().Get("status"), 100)
+		if err != nil {
+			common.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		common.WriteJSON(w, http.StatusOK, items)
+		return
+	}
+
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		request, err := s.approvalService.Get(r.Context(), parts[0])
+		if err != nil {
+			common.WriteError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		common.WriteJSON(w, http.StatusOK, request)
+		return
+	}
+	if len(parts) != 2 || parts[1] != "decision" || r.Method != http.MethodPost {
+		common.WriteError(w, http.StatusNotFound, "approval route not found")
+		return
+	}
+
+	var body approvals.Decision
+	if err := common.ReadJSON(r, &body); err != nil {
+		common.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	request, err := s.approvalService.Decide(
+		r.Context(), parts[0], actorFromRequest(r), "user",
+		body.Decision, body.Reason, "webhook_callback",
+	)
+	if err != nil {
+		common.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, request)
+}
+
+func (s *Server) handleSlackApprovalCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		common.WriteError(w, http.StatusBadRequest, "unable to read Slack callback")
+		return
+	}
+	result, err := s.slackApproval.Handle(r.Context(), r.Header, body)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "signature") || strings.Contains(err.Error(), "authorized") {
+			status = http.StatusUnauthorized
+		}
+		common.WriteError(w, status, err.Error())
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -514,7 +651,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 }
 
 func isPublicRoute(r *http.Request) bool {
-	return r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics"
+	return r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" ||
+		r.URL.Path == "/v1/approval-callbacks/slack"
 }
 
 func requiredPermission(r *http.Request) auth.Permission {
@@ -546,6 +684,9 @@ func requiredPermission(r *http.Request) auth.Permission {
 		if len(parts) == 3 && parts[1] == "rca" && parts[2] == "generate" {
 			return auth.PermissionGenerateRCA
 		}
+		if len(parts) == 3 && parts[1] == "remediations" && parts[2] == "suggest" {
+			return auth.PermissionGenerateRCA
+		}
 		if len(parts) == 3 && parts[1] == "remediations" && parts[2] == "propose" {
 			return auth.PermissionProposeRemediation
 		}
@@ -558,6 +699,16 @@ func requiredPermission(r *http.Request) auth.Permission {
 			case "execute", "cancel":
 				return auth.PermissionExecuteRemediation
 			}
+		}
+	case path == "/v1/approval-requests" && method == http.MethodGet:
+		return auth.PermissionView
+	case strings.HasPrefix(path, "/v1/approval-requests/"):
+		parts := strings.Split(strings.TrimPrefix(path, "/v1/approval-requests/"), "/")
+		if len(parts) == 1 && method == http.MethodGet {
+			return auth.PermissionView
+		}
+		if len(parts) == 2 && parts[1] == "decision" && method == http.MethodPost {
+			return auth.PermissionApproveRemediation
 		}
 	case path == "/v1/audit":
 		return auth.PermissionViewAudit

@@ -16,11 +16,12 @@ import (
 )
 
 type Service struct {
-	store        *incidents.Store
-	aiServiceURL string
-	metrics      *telemetry.Metrics
-	httpClient   *http.Client
-	correlator   *correlation.Correlator
+	store          *incidents.Store
+	aiServiceURL   string
+	aiServiceToken string
+	metrics        *telemetry.Metrics
+	httpClient     *http.Client
+	correlator     *correlation.Correlator
 }
 
 type Candidate struct {
@@ -38,13 +39,14 @@ type scoredHypothesis struct {
 	Factors    []string
 }
 
-func NewService(store *incidents.Store, aiServiceURL string, metrics *telemetry.Metrics) *Service {
+func NewService(store *incidents.Store, aiServiceURL, aiServiceToken string, metrics *telemetry.Metrics) *Service {
 	return &Service{
-		store:        store,
-		aiServiceURL: strings.TrimRight(aiServiceURL, "/"),
-		metrics:      metrics,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
-		correlator:   correlation.New(),
+		store:          store,
+		aiServiceURL:   strings.TrimRight(aiServiceURL, "/"),
+		aiServiceToken: aiServiceToken,
+		metrics:        metrics,
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		correlator:     correlation.New(),
 	}
 }
 
@@ -78,7 +80,7 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		ModelBackend:         "deterministic",
 	}
 
-	if llmSummary, backend, model, err := s.callAdvisor(ctx, incident, evidence, hypothesis); err == nil {
+	if llmSummary, backend, model, err := s.callAdvisor(ctx, incident, evidence, hypothesis, confidence); err == nil {
 		report.LLMSummary = llmSummary
 		report.ModelBackend = backend
 		report.ModelName = model
@@ -201,7 +203,7 @@ func clamp(value, min, max float64) float64 {
 	return value
 }
 
-func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, evidence []string, hypothesis string) (summary, backend, model string, err error) {
+func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, evidence []string, hypothesis string, confidence float64) (summary, backend, model string, err error) {
 	if s.aiServiceURL == "" {
 		return "", "", "", fmt.Errorf("ai service disabled")
 	}
@@ -216,6 +218,7 @@ func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, 
 		},
 		"primary_hypothesis": hypothesis,
 		"evidence":           evidence,
+		"confidence":         confidence,
 	}
 
 	body, _ := json.Marshal(request)
@@ -224,6 +227,7 @@ func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, 
 		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	s.authorizeAIRequest(req)
 
 	start := time.Now()
 	resp, err := s.httpClient.Do(req)
@@ -249,6 +253,74 @@ func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, 
 	s.metrics.LLMRequestsTotal.WithLabelValues(payload.Backend, "succeeded").Inc()
 	s.metrics.LLMRequestDuration.WithLabelValues(payload.Backend).Observe(time.Since(start).Seconds())
 	return payload.Summary, payload.Backend, payload.Model, nil
+}
+
+func (s *Service) SuggestRemediations(ctx context.Context, incidentID string) (map[string]any, error) {
+	if s.aiServiceURL == "" {
+		return nil, fmt.Errorf("ai service disabled")
+	}
+	incident, err := s.store.GetIncident(ctx, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	signals, err := s.store.ListSignals(ctx, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	_, _, confidence, evidence, _, candidates := buildDeterministicRCA(incident, signals)
+	request := map[string]any{
+		"incident": map[string]any{
+			"id":          incident.ID,
+			"title":       incident.Title,
+			"service":     incident.Service,
+			"severity":    incident.Severity,
+			"environment": "local",
+		},
+		"evidence":                 evidence,
+		"deterministic_candidates": candidates,
+		"confidence":               confidence,
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.aiServiceURL+"/v1/remediation/suggest", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	s.authorizeAIRequest(req)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("governed AI suggestion returned %s", resp.Status)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if err := validateAdvisoryResponse(payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func validateAdvisoryResponse(payload map[string]any) error {
+	executed, hasExecuted := payload["executed"].(bool)
+	advisoryOnly, hasAdvisoryOnly := payload["advisory_only"].(bool)
+	if !hasExecuted || executed || !hasAdvisoryOnly || !advisoryOnly {
+		return fmt.Errorf("AI suggestion violated advisory-only contract")
+	}
+	return nil
+}
+
+func (s *Service) authorizeAIRequest(req *http.Request) {
+	if s.aiServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.aiServiceToken)
+	}
 }
 
 func appendEvidence(items []string, values ...string) []string {

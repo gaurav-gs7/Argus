@@ -67,6 +67,8 @@ func incidentCmd(baseURL, token *string) *cobra.Command {
 
 func remediationCmd(baseURL, token *string) *cobra.Command {
 	cmd := &cobra.Command{Use: "remediation"}
+	approve := decisionCommand("approve", "Approve a remediation", baseURL, token)
+	deny := decisionCommand("deny", "Deny a remediation", baseURL, token)
 
 	cmd.AddCommand(
 		&cobra.Command{
@@ -77,15 +79,8 @@ func remediationCmd(baseURL, token *string) *cobra.Command {
 				return printRequest(http.MethodGet, *baseURL+"/v1/incidents/"+args[0]+"/remediations", nil, *token)
 			},
 		},
-		&cobra.Command{
-			Use:   "approve <remediation_id>",
-			Short: "Approve a remediation",
-			Args:  cobra.ExactArgs(1),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				body := map[string]any{"reason": "Approved from CLI"}
-				return printRequest(http.MethodPost, *baseURL+"/v1/remediations/"+args[0]+"/approve", body, *token)
-			},
-		},
+		approve,
+		deny,
 		func() *cobra.Command {
 			var dryRun bool
 			sub := &cobra.Command{
@@ -102,6 +97,28 @@ func remediationCmd(baseURL, token *string) *cobra.Command {
 		}(),
 	)
 
+	return cmd
+}
+
+func decisionCommand(decision, description string, baseURL, token *string) *cobra.Command {
+	var reason string
+	route := decision
+	if decision == "deny" {
+		route = "reject"
+	}
+	cmd := &cobra.Command{
+		Use:   decision + " <remediation_id>",
+		Short: description,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(reason) == "" {
+				return fmt.Errorf("--reason is required")
+			}
+			body := map[string]any{"reason": reason}
+			return printRequest(http.MethodPost, *baseURL+"/v1/remediations/"+args[0]+"/"+route, body, *token)
+		},
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "Why this remediation should be approved or denied")
 	return cmd
 }
 

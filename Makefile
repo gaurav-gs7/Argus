@@ -3,12 +3,15 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: up down full-up logs seed test integration-test lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test integration-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
-up:
+bootstrap:
+	./scripts/bootstrap.sh
+
+up: bootstrap
 	docker compose up --build -d
 
-full-up:
+full-up: bootstrap
 	docker compose -f docker-compose.yml -f docker-compose.full.yml up --build -d
 
 down:
@@ -37,6 +40,12 @@ integration-test:
 		ARGUS_TEST_NATS_URL='nats://127.0.0.1:54222' \
 		go test -race -count=1 ./internal/incidents ./internal/queue
 
+ai-test:
+	docker compose run --rm --no-deps --build argus-ai python -m unittest discover -s tests -v
+
+ai-test-local:
+	PYTHONPATH=ai-service python3 -m unittest discover -s ai-service/tests -v
+
 vet:
 	go vet ./...
 
@@ -52,7 +61,7 @@ docs-check:
 
 lint: fmt-check vet docs-check
 
-ci: lint test py-compile compose-check
+ci: lint test ai-test py-compile compose-check
 
 reset:
 	./scripts/reset-local.sh

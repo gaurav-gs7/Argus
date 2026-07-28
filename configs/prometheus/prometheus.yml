@@ -9,6 +9,10 @@ scrape_configs:
     static_configs:
       - targets: ["argus-api:8080"]
 
+  - job_name: argus-ai
+    static_configs:
+      - targets: ["argus-ai:8090"]
+
   - job_name: payments-api
     static_configs:
       - targets: ["payments-api:9001"]

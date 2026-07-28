@@ -1,0 +1,79 @@
+{
+  "captured_at": "2026-07-28T12:15:54Z",
+  "scenario": "postgres_connection_exhaustion",
+  "environment": "docker-compose-local",
+  "resource_profile": {
+    "services_started": [
+      "postgres",
+      "redis",
+      "nats",
+      "argus-api",
+      "argus-worker",
+      "argus-ai",
+      "verdikt",
+      "payments-api"
+    ],
+    "observability_stack_started": false,
+    "reason": "Exercise the approval path without loading the full 8 GB laptop profile",
+    "measured_container_memory_mib": 282.1,
+    "docker_build_context_before_ignore_mib": 412.8,
+    "docker_build_context_after_ignore_kib": 71.1
+  },
+  "approved_path": {
+    "incident_id": "inc_f6a501f61093432291b88ee4cdc9bb80",
+    "approval_request_id": "apr_ab2106a1828442ff99eb382b2b350975",
+    "remediation_id": "rem_c2d1e21c79924be1aec2f53ca4f848d7",
+    "action_type": "drain_postgres_connections",
+    "target": "payments-api",
+    "risk": "medium",
+    "requested_by": "operator@local",
+    "self_approval": {
+      "http_status": 400,
+      "error": "proposer cannot approve or deny their own remediation"
+    },
+    "decision": {
+      "status": "approved",
+      "decided_by": "admin@local",
+      "reason": "Reviewed deterministic evidence; dry-run is bounded to the demo service",
+      "source": "api"
+    },
+    "execution": {
+      "dry_run": true,
+      "final_status": "succeeded",
+      "handler_result": "Typed handler validated demo-only postgres connection drain"
+    },
+    "atomic_audit_actions": [
+      "approval.approved",
+      "remediation.approved"
+    ]
+  },
+  "unanswered_path": {
+    "approval_request_id": "apr_4631a7cc5ad14f549b53cd7c3830b679",
+    "remediation_id": "rem_cccb10bf6556476198f35e63175af46b",
+    "action_type": "restart_service",
+    "requested_at": "2026-07-28T12:15:41.350286Z",
+    "escalated_at": "2026-07-28T12:15:45.602494Z",
+    "expired_at": "2026-07-28T12:15:53.602748Z",
+    "approval_status": "expired",
+    "remediation_status": "timed_out",
+    "audit_actions": [
+      "approval.escalated",
+      "approval.expired",
+      "remediation.approval_timed_out"
+    ]
+  },
+  "live_metrics": {
+    "argus_approvals_pending": 0,
+    "argus_approval_escalations_total": 1,
+    "argus_approval_requests_total_approved": 1,
+    "argus_approval_requests_total_expired": 1,
+    "argus_approval_decision_duration_seconds_count": 1
+  },
+  "verification": {
+    "go_unit_tests": "passed",
+    "postgres_integration_tests": "passed",
+    "go_vet": "passed",
+    "prometheus_rule_validation": "12 rules passed",
+    "compose_services_healthy": true
+  }
+}

@@ -9,6 +9,8 @@ This directory contains committed reviewer-friendly snapshots for the five Argus
 | Nginx 5xx spike | [nginx-5xx-spike.json](nginx-5xx-spike.json) |
 | Dependency latency | [dependency-latency.json](dependency-latency.json) |
 | Bad config rollout | [bad-config-rollout.json](bad-config-rollout.json) |
+| AI governance with Verdikt | [ai-governance-verdikt.json](ai-governance-verdikt.json) |
+| Human approval workflow | [human-approval-workflow.json](human-approval-workflow.json) |
 
 Regenerate live evidence locally:
 
@@ -18,4 +20,4 @@ make seed
 make demo-postgres-exhaustion
 ```
 
-The snapshots show the intended evidence shape: incident metadata, correlated timeline, deterministic RCA, policy-gated remediation proposal, and safety notes.
+The snapshots show the intended evidence shape: incident metadata, correlated timeline, deterministic RCA, policy-gated remediation proposal, identity-bound approval, and safety notes.

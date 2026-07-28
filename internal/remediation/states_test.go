@@ -6,6 +6,9 @@ func TestRemediationStateMachine(t *testing.T) {
 	if !CanTransition(StateAwaitingApproval, StateApproved) {
 		t.Fatalf("expected awaiting_approval -> approved to be valid")
 	}
+	if !CanTransition(StateAwaitingApproval, StateTimedOut) {
+		t.Fatalf("expected awaiting_approval -> timed_out to be valid")
+	}
 	if CanTransition(StatePolicyBlocked, StateQueued) {
 		t.Fatalf("policy_blocked must not transition to queued")
 	}

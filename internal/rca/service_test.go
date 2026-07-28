@@ -1,11 +1,41 @@
 package rca
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/incidents"
 )
+
+func TestAuthorizeAIRequestUsesServiceCredential(t *testing.T) {
+	service := &Service{aiServiceToken: "service-secret"}
+	req, err := http.NewRequest(http.MethodPost, "http://argus-ai/v1/remediation/suggest", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	service.authorizeAIRequest(req)
+	if got := req.Header.Get("Authorization"); got != "Bearer service-secret" {
+		t.Fatalf("unexpected authorization header %q", got)
+	}
+}
+
+func TestValidateAdvisoryResponseFailsClosed(t *testing.T) {
+	valid := map[string]any{"executed": false, "advisory_only": true}
+	if err := validateAdvisoryResponse(valid); err != nil {
+		t.Fatalf("valid advisory response rejected: %v", err)
+	}
+	for _, invalid := range []map[string]any{
+		{"advisory_only": true},
+		{"executed": false},
+		{"executed": true, "advisory_only": true},
+		{"executed": false, "advisory_only": false},
+	} {
+		if err := validateAdvisoryResponse(invalid); err == nil {
+			t.Fatalf("unsafe response accepted: %#v", invalid)
+		}
+	}
+}
 
 func TestBuildDeterministicRCAForPostgresExhaustion(t *testing.T) {
 	incident := incidents.Incident{ID: "inc_123", Title: "High 5xx on payments-api", Service: "payments-api", Severity: "sev2", StartedAt: time.Now().UTC()}

@@ -3,18 +3,23 @@ package telemetry
 import "github.com/prometheus/client_golang/prometheus"
 
 type Metrics struct {
-	IncidentsTotal            *prometheus.CounterVec
-	IncidentsOpen             prometheus.Gauge
-	RCAJobsTotal              *prometheus.CounterVec
-	RCADuration               *prometheus.HistogramVec
-	RemediationsTotal         *prometheus.CounterVec
-	RemediationDuration       *prometheus.HistogramVec
-	RemediationFailuresTotal  *prometheus.CounterVec
-	PolicyDenialsTotal        *prometheus.CounterVec
-	LLMRequestsTotal          *prometheus.CounterVec
-	LLMRequestDuration        *prometheus.HistogramVec
-	WorkerHeartbeatAgeSeconds *prometheus.GaugeVec
-	RCAConfidence             *prometheus.HistogramVec
+	IncidentsTotal                    *prometheus.CounterVec
+	IncidentsOpen                     prometheus.Gauge
+	RCAJobsTotal                      *prometheus.CounterVec
+	RCADuration                       *prometheus.HistogramVec
+	RemediationsTotal                 *prometheus.CounterVec
+	RemediationDuration               *prometheus.HistogramVec
+	RemediationFailuresTotal          *prometheus.CounterVec
+	PolicyDenialsTotal                *prometheus.CounterVec
+	LLMRequestsTotal                  *prometheus.CounterVec
+	LLMRequestDuration                *prometheus.HistogramVec
+	WorkerHeartbeatAgeSeconds         *prometheus.GaugeVec
+	RCAConfidence                     *prometheus.HistogramVec
+	ApprovalRequestsTotal             *prometheus.CounterVec
+	ApprovalsPending                  prometheus.Gauge
+	ApprovalDecisionDuration          prometheus.Histogram
+	ApprovalEscalationsTotal          *prometheus.CounterVec
+	ApprovalNotificationFailuresTotal *prometheus.CounterVec
 }
 
 func MustRegister() *Metrics {
@@ -71,6 +76,27 @@ func MustRegister() *Metrics {
 			Help:    "Deterministic RCA confidence score by primary hypothesis",
 			Buckets: []float64{0.25, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0},
 		}, []string{"hypothesis"}),
+		ApprovalRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_approval_requests_total",
+			Help: "Approval workflow transitions by status and source",
+		}, []string{"status", "source"}),
+		ApprovalsPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "argus_approvals_pending",
+			Help: "Current number of remediation approvals waiting for a human decision",
+		}),
+		ApprovalDecisionDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "argus_approval_decision_duration_seconds",
+			Help:    "Time from approval request to human decision",
+			Buckets: []float64{30, 60, 120, 300, 600, 900, 1800, 3600},
+		}),
+		ApprovalEscalationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_approval_escalations_total",
+			Help: "Approval requests escalated after no response",
+		}, []string{"transport"}),
+		ApprovalNotificationFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_approval_notification_failures_total",
+			Help: "Approval notification delivery failures",
+		}, []string{"transport"}),
 	}
 
 	prometheus.MustRegister(
@@ -86,6 +112,11 @@ func MustRegister() *Metrics {
 		m.LLMRequestDuration,
 		m.WorkerHeartbeatAgeSeconds,
 		m.RCAConfidence,
+		m.ApprovalRequestsTotal,
+		m.ApprovalsPending,
+		m.ApprovalDecisionDuration,
+		m.ApprovalEscalationsTotal,
+		m.ApprovalNotificationFailuresTotal,
 	)
 
 	return m

@@ -15,9 +15,11 @@ func TestRequiredPermissionForStateChangingRoutes(t *testing.T) {
 		want   auth.Permission
 	}{
 		{http.MethodPost, "/v1/incidents/inc_1/rca/generate", auth.PermissionGenerateRCA},
+		{http.MethodPost, "/v1/incidents/inc_1/remediations/suggest", auth.PermissionGenerateRCA},
 		{http.MethodPost, "/v1/incidents/inc_1/remediations/propose", auth.PermissionProposeRemediation},
 		{http.MethodPost, "/v1/remediations/rem_1/approve", auth.PermissionApproveRemediation},
 		{http.MethodPost, "/v1/remediations/rem_1/execute", auth.PermissionExecuteRemediation},
+		{http.MethodPost, "/v1/approval-requests/apr_1/decision", auth.PermissionApproveRemediation},
 		{http.MethodPost, "/v1/services", auth.PermissionManageService},
 	}
 	for _, tt := range tests {
@@ -43,6 +45,17 @@ func TestAuthMiddlewareRejectsMissingToken(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestOnlySlackCallbackIsPublic(t *testing.T) {
+	slack := httptest.NewRequest(http.MethodPost, "/v1/approval-callbacks/slack", nil)
+	if !isPublicRoute(slack) {
+		t.Fatal("signed Slack callback must bypass bearer auth")
+	}
+	decision := httptest.NewRequest(http.MethodPost, "/v1/approval-requests/apr_1/decision", nil)
+	if isPublicRoute(decision) {
+		t.Fatal("generic approval decision endpoint must require bearer auth")
 	}
 }
 
