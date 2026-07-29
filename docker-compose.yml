@@ -31,6 +31,39 @@ services:
       - "4222:4222"
       - "8222:8222"
 
+  keycloak:
+    image: argus-keycloak:26.7.0
+    build:
+      context: ./configs/keycloak
+      dockerfile: Dockerfile
+    mem_limit: 768m
+    cpus: 0.75
+    command: ["start", "--optimized", "--http-enabled=true", "--cache=local", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${ARGUS_KEYCLOAK_ADMIN_USERNAME:-argus-local-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${ARGUS_KEYCLOAK_ADMIN_PASSWORD:-argus-local-admin-password}
+      KC_HOSTNAME: http://localhost:8082
+      JAVA_OPTS_KC_HEAP: -XX:InitialRAMPercentage=25 -XX:MaxRAMPercentage=65
+      ARGUS_DEMO_ADMIN_CLIENT_SECRET: ${ARGUS_DEMO_ADMIN_CLIENT_SECRET:-argus-local-admin-client-secret}
+      ARGUS_DEMO_OPERATOR_CLIENT_SECRET: ${ARGUS_DEMO_OPERATOR_CLIENT_SECRET:-argus-local-operator-client-secret}
+      ARGUS_DEMO_VIEWER_CLIENT_SECRET: ${ARGUS_DEMO_VIEWER_CLIENT_SECRET:-argus-local-viewer-client-secret}
+    volumes:
+      - ./configs/keycloak/argus-realm.json:/opt/keycloak/data/import/argus-realm.json:ro
+    ports:
+      - "127.0.0.1:8082:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+
   argus-api:
     mem_limit: 256m
     cpus: 0.50
@@ -38,6 +71,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     environment:
+      ARGUS_ENV: local
       ARGUS_HTTP_ADDR: :8080
       ARGUS_POSTGRES_DSN: postgres://argus:argus@postgres:5432/argus?sslmode=disable
       ARGUS_REDIS_ADDR: redis:6379
@@ -45,7 +79,16 @@ services:
       ARGUS_LLM_BACKEND: mock
       ARGUS_AI_SERVICE_URL: http://argus-ai:8090
       ARGUS_AI_SERVICE_TOKEN: ${ARGUS_AI_SERVICE_TOKEN:-argus-ai-local}
-      ARGUS_AUTH_TOKENS: ${ARGUS_AUTH_TOKENS:-local-admin-token:admin:admin@local,local-operator-token:operator:operator@local,local-viewer-token:viewer:viewer@local}
+      ARGUS_OIDC_ISSUER_URL: ${ARGUS_OIDC_ISSUER_URL:-http://localhost:8082/realms/argus}
+      ARGUS_OIDC_AUDIENCE: ${ARGUS_OIDC_AUDIENCE:-argus-api}
+      ARGUS_OIDC_JWKS_URL: ${ARGUS_OIDC_JWKS_URL:-http://keycloak:8080/realms/argus/protocol/openid-connect/certs}
+      ARGUS_OIDC_ROLE_CLAIM: ${ARGUS_OIDC_ROLE_CLAIM:-realm_access.roles}
+      ARGUS_OIDC_ROLE_MAPPINGS: ${ARGUS_OIDC_ROLE_MAPPINGS:-argus-admin=admin,argus-operator=operator,argus-viewer=viewer}
+      ARGUS_OIDC_EMAIL_CLAIM: ${ARGUS_OIDC_EMAIL_CLAIM:-email}
+      ARGUS_OIDC_DISPLAY_NAME_CLAIM: ${ARGUS_OIDC_DISPLAY_NAME_CLAIM:-preferred_username}
+      ARGUS_OIDC_SIGNING_ALGS: ${ARGUS_OIDC_SIGNING_ALGS:-RS256}
+      ARGUS_OIDC_DISCOVERY_TIMEOUT: ${ARGUS_OIDC_DISCOVERY_TIMEOUT:-5s}
+      ARGUS_OIDC_PROVIDER_TIMEOUT: ${ARGUS_OIDC_PROVIDER_TIMEOUT:-3s}
       ARGUS_LOG_LEVEL: INFO
       ARGUS_REMEDIATION_EXECUTOR: ${ARGUS_REMEDIATION_EXECUTOR:-local}
       ARGUS_HELIOS_BASE_URL: ${ARGUS_HELIOS_BASE_URL:-}
@@ -72,6 +115,8 @@ services:
         condition: service_started
       nats:
         condition: service_started
+      keycloak:
+        condition: service_healthy
 
   argus-worker:
     mem_limit: 192m

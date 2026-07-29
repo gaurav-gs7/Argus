@@ -4,9 +4,9 @@ set -euo pipefail
 docker compose exec -T postgres psql -U argus -d argus <<'SQL'
 INSERT INTO users (id, email, name, role)
 VALUES
-  ('usr_admin', 'admin@local', 'Local Admin', 'admin'),
-  ('usr_operator', 'operator@local', 'Local Operator', 'operator'),
-  ('usr_viewer', 'viewer@local', 'Local Viewer', 'viewer')
+  ('http://localhost:8082/realms/argus#argus-demo-admin-subject', 'admin@argus.local', 'OIDC Demo Admin', 'admin'),
+  ('http://localhost:8082/realms/argus#argus-demo-operator-subject', 'operator@argus.local', 'OIDC Demo Operator', 'operator'),
+  ('http://localhost:8082/realms/argus#argus-demo-viewer-subject', 'viewer@argus.local', 'OIDC Demo Viewer', 'viewer')
 ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO services (id, name, owner, tier, environment)

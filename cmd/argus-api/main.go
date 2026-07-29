@@ -30,6 +30,7 @@ func main() {
 		Addr:              cfg.HTTPAddr,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 	}
 
 	go func() {

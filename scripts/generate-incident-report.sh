@@ -4,7 +4,11 @@ set -euo pipefail
 INCIDENT_ID="${1:-}"
 API_URL="${ARGUS_API_URL:-http://localhost:8080}"
 AI_URL="${ARGUS_AI_URL:-http://localhost:8090}"
-API_TOKEN="${ARGUS_API_TOKEN:-local-admin-token}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+API_TOKEN="${ARGUS_API_TOKEN:-}"
+if [[ -z "${API_TOKEN}" ]]; then
+  API_TOKEN="$("${SCRIPT_DIR}/oidc-token.sh" viewer)"
+fi
 if [[ -z "${INCIDENT_ID}" ]]; then
   echo "usage: $0 <incident_id>"
   exit 1

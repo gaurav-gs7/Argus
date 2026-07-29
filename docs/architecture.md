@@ -14,6 +14,7 @@ Argus is split into deterministic control-plane logic and an advisory AI sidecar
 Argus can dispatch approved remediations to an external Helios control plane instead of the local Argus worker path.
 
 - Argus remains authoritative for policy, approval, audit, and incident state
+- OIDC verifies signed user identity; Argus maps trusted role claims into local permissions
 - Helios becomes the execution backend for delegated remediation workflows
 - The current integration uses Helios's trusted `persist_artifact` workflow path as a safe simulated execution backend
 - Future Helios remediation-specific task types can replace this workflow mapping without changing Argus's control-plane contracts

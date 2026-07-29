@@ -14,7 +14,7 @@
     "to": "now"
   },
   "title": "Argus Control Plane Overview",
-  "version": 3,
+  "version": 4,
   "templating": {
     "list": []
   },
@@ -517,6 +517,124 @@
         }
       ],
       "title": "Human Decision p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 42
+      },
+      "id": 21,
+      "targets": [
+        {
+          "expr": "increase(argus_authentication_failures_total[15m])",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "OIDC Authentication Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 42
+      },
+      "id": 22,
+      "targets": [
+        {
+          "expr": "increase(argus_authorization_denials_total[15m])",
+          "legendFormat": "{{role}} / {{permission}}",
+          "refId": "A"
+        }
+      ],
+      "title": "RBAC Denials",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 42
+      },
+      "id": 23,
+      "targets": [
+        {
+          "expr": "up{job=\"keycloak\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "OIDC Provider Available",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 42
+      },
+      "id": 24,
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(argus_authentication_failures_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "OIDC Rejection Rate",
       "type": "timeseries"
     }
   ]

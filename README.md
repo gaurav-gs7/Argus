@@ -21,6 +21,7 @@ This repository is intentionally optimized for local development on a MacBook Ai
 - PostgreSQL for durable state
 - NATS JetStream for durable event and remediation delivery
 - Redis for lightweight cache and coordination
+- OIDC/JWT authentication with a resource-capped local Keycloak realm
 - Prometheus, Alertmanager, Loki, Grafana, and OTel Collector for observability
 - Docker Compose instead of Kubernetes
 
@@ -40,6 +41,7 @@ In the current bridge, Argus submits a trusted Helios `persist_artifact` workflo
 ## Architecture
 
 ```text
+OIDC/JWKS ---------------->+
 Observability signals -> Argus API -> Deterministic RCA -> AI advisory
                                       |                 |             |
                                       |                 |             v
@@ -64,9 +66,9 @@ Observability signals -> Argus API -> Deterministic RCA -> AI advisory
 ```bash
 make up
 make seed
-export ARGUS_API_TOKEN=local-admin-token
+export ARGUS_API_TOKEN="$(./scripts/oidc-token.sh viewer)"
 curl http://localhost:8080/healthz
-curl -H "Authorization: Bearer local-viewer-token" http://localhost:8080/v1/incidents
+curl -H "Authorization: Bearer ${ARGUS_API_TOKEN}" http://localhost:8080/v1/incidents
 ```
 
 ## One-Command Demo
@@ -91,6 +93,7 @@ Normal profile:
 - postgres
 - redis
 - nats
+- keycloak
 - argus-api
 - argus-worker
 - argus-ai
@@ -110,15 +113,19 @@ Full profile:
 - failure-injector
 - optional ollama
 
-## Local RBAC
+## OIDC Authentication And RBAC
 
-Argus uses simple local Bearer tokens for demo-safe RBAC:
+Argus accepts short-lived, asymmetrically signed OIDC JWT access tokens. It validates the signature through the provider's rotating JWKS, exact issuer, `argus-api` audience, expiry, and an RS256 allow-list before reading identity or role claims. Provider roles are explicitly mapped to `admin`, `operator`, or `viewer`; missing, unknown, or conflicting Argus roles fail closed.
 
-- `local-admin-token`: admin, full access
-- `local-operator-token`: operator, incident/RCA/remediation workflow access
-- `local-viewer-token`: viewer, read-only access
+The local Compose profile includes a 768 MiB-capped Keycloak instance and three separate service accounts for repeatable automation:
 
-Configure tokens with `ARGUS_AUTH_TOKENS` using `token:role:email` entries. Health, readiness, and metrics stay public for local probes; `/v1/*` APIs require `Authorization: Bearer <token>`.
+```bash
+export ARGUS_API_TOKEN="$(./scripts/oidc-token.sh operator)"
+```
+
+Those clients exist only in the local realm. Production uses the organization's OIDC provider over HTTPS, provider-managed users/groups, and secrets outside the repository. Set `ARGUS_OIDC_ISSUER_URL`, `ARGUS_OIDC_AUDIENCE`, and `ARGUS_OIDC_ROLE_MAPPINGS`; normally leave `ARGUS_OIDC_JWKS_URL` empty so standards-based discovery supplies the rotating key set.
+
+Health, readiness, metrics, and the independently HMAC-verified Slack callback stay public. Every other `/v1/*` route requires a verified OIDC token. Authorization uses the mapped role, while audit and four-eyes controls use the immutable `issuer#sub` identity rather than mutable email or caller-provided fields.
 
 ## Governed AI Proposals
 
@@ -154,11 +161,11 @@ Approvers use the notification's decision endpoint or the CLI:
 
 ```bash
 argus remediation approve rem_123 \
-  --token local-admin-token \
+  --token "$(./scripts/oidc-token.sh admin)" \
   --reason "Reviewed RCA evidence; dry-run is scoped to payments-api"
 ```
 
-Identity comes from the authenticated bearer token, never the request body. The approval decision, remediation transition, and audit entries commit in one PostgreSQL transaction. A background controller escalates once at `ARGUS_APPROVAL_ESCALATE_AFTER` and moves unanswered requests and their remediations to `expired`/`timed_out` at `ARGUS_APPROVAL_TIMEOUT`.
+Identity comes from the verified OIDC issuer and subject, never the request body. The approval decision, remediation transition, and audit entries commit in one PostgreSQL transaction. A background controller escalates once at `ARGUS_APPROVAL_ESCALATE_AFTER` and moves unanswered requests and their remediations to `expired`/`timed_out` at `ARGUS_APPROVAL_TIMEOUT`.
 
 ## Current V1 Scope
 

@@ -18,9 +18,13 @@ import (
 	"time"
 
 	"github.com/gauravgs7/argus/internal/approvals"
+	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/db"
+	"github.com/gauravgs7/argus/internal/incidents"
+	remediationpkg "github.com/gauravgs7/argus/internal/remediation"
 	"github.com/gauravgs7/argus/internal/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestApprovalDecisionIsAtomicWithRemediationAndAudit(t *testing.T) {
@@ -229,6 +233,92 @@ func TestSignedSlackModalRecordsMappedIdentityAndReason(t *testing.T) {
 		stored.DecisionReason != "Reviewed error-rate recovery and rollback plan" {
 		t.Fatalf("stored Slack decision = %+v", stored)
 	}
+}
+
+func TestRepeatedExecutionReusesDurableRemediationWithoutRequeue(t *testing.T) {
+	dsn := os.Getenv("ARGUS_INTEGRATION_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_INTEGRATION_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatalf("migrate postgres: %v", err)
+	}
+
+	serviceID := common.NewID("svc")
+	incidentID := common.NewID("inc")
+	remediationID := common.NewID("rem")
+	insertFixture(t, database, serviceID, incidentID, remediationID)
+	t.Cleanup(func() { cleanupFixture(database, "", remediationID, incidentID, serviceID) })
+	if _, err := database.ExecContext(ctx, `
+		UPDATE remediation_actions SET status = 'approved', approved_by = 'issuer#admin'
+		WHERE id = $1
+	`, remediationID); err != nil {
+		t.Fatalf("approve remediation fixture: %v", err)
+	}
+
+	executor := &countingExecutor{}
+	metrics := &telemetry.Metrics{
+		RemediationFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_remediation_failures_total",
+		}, []string{"action_type"}),
+		RemediationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "test_remediation_duration_seconds",
+		}, []string{"action_type"}),
+	}
+	service := remediationpkg.NewService(
+		incidents.NewStore(database),
+		audit.NewService(database),
+		nil,
+		nil,
+		executor,
+		metrics,
+		nil,
+	)
+
+	reused, err := service.Execute(ctx, remediationID, true, "issuer#admin")
+	if err != nil || reused {
+		t.Fatalf("first execution reused=%t err=%v", reused, err)
+	}
+	reused, err = service.Execute(ctx, remediationID, true, "issuer#admin")
+	if err != nil || !reused {
+		t.Fatalf("second execution reused=%t err=%v", reused, err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls=%d, want 1", executor.calls)
+	}
+
+	var queued, reusedAudit int
+	if err := database.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE action = 'remediation.execute_requested'),
+			COUNT(*) FILTER (WHERE action = 'remediation.execution_reused')
+		FROM audit_logs
+		WHERE resource_id = $1
+	`, remediationID).Scan(&queued, &reusedAudit); err != nil {
+		t.Fatalf("count execution audit records: %v", err)
+	}
+	if queued != 1 || reusedAudit != 1 {
+		t.Fatalf("execution audit records queued=%d reused=%d, want 1 each", queued, reusedAudit)
+	}
+}
+
+type countingExecutor struct {
+	calls int
+}
+
+func (e *countingExecutor) Name() string {
+	return "counting-test"
+}
+
+func (e *countingExecutor) Execute(context.Context, incidents.RemediationAction, incidents.Incident, bool) (remediationpkg.ExecutionOutcome, error) {
+	e.calls++
+	return remediationpkg.ExecutionOutcome{Status: remediationpkg.StateQueued}, nil
 }
 
 func signedSlackHeaders(secret string, body []byte, now time.Time) http.Header {

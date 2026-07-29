@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test integration-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -39,6 +39,9 @@ integration-test:
 		ARGUS_TEST_POSTGRES_DSN='postgres://argus:argus@127.0.0.1:55432/argus?sslmode=disable' \
 		ARGUS_TEST_NATS_URL='nats://127.0.0.1:54222' \
 		go test -race -count=1 ./internal/incidents ./internal/queue
+
+oidc-test:
+	./scripts/test-oidc-e2e.sh
 
 ai-test:
 	docker compose run --rm --no-deps --build argus-ai python -m unittest discover -s tests -v

@@ -15,7 +15,16 @@ type Config struct {
 	AIServiceURL               string
 	AIServiceToken             string
 	LogLevel                   string
-	AuthTokens                 string
+	OIDCIssuerURL              string
+	OIDCAudience               string
+	OIDCJWKSURL                string
+	OIDCRoleClaim              string
+	OIDCRoleMappings           string
+	OIDCEmailClaim             string
+	OIDCDisplayNameClaim       string
+	OIDCSigningAlgs            []string
+	OIDCDiscoveryTimeout       time.Duration
+	OIDCProviderTimeout        time.Duration
 	IncidentGrouping           time.Duration
 	RemediationExecutor        string
 	HeliosBaseURL              string
@@ -47,7 +56,16 @@ func Load() Config {
 		AIServiceURL:               strings.TrimRight(getenv("ARGUS_AI_SERVICE_URL", "http://localhost:8090"), "/"),
 		AIServiceToken:             getenv("ARGUS_AI_SERVICE_TOKEN", "argus-ai-local"),
 		LogLevel:                   strings.ToUpper(getenv("ARGUS_LOG_LEVEL", "INFO")),
-		AuthTokens:                 getenv("ARGUS_AUTH_TOKENS", "local-admin-token:admin:admin@local,local-operator-token:operator:operator@local,local-viewer-token:viewer:viewer@local"),
+		OIDCIssuerURL:              strings.TrimRight(getenv("ARGUS_OIDC_ISSUER_URL", ""), "/"),
+		OIDCAudience:               getenv("ARGUS_OIDC_AUDIENCE", "argus-api"),
+		OIDCJWKSURL:                getenv("ARGUS_OIDC_JWKS_URL", ""),
+		OIDCRoleClaim:              getenv("ARGUS_OIDC_ROLE_CLAIM", "realm_access.roles"),
+		OIDCRoleMappings:           getenv("ARGUS_OIDC_ROLE_MAPPINGS", "argus-admin=admin,argus-operator=operator,argus-viewer=viewer"),
+		OIDCEmailClaim:             getenv("ARGUS_OIDC_EMAIL_CLAIM", "email"),
+		OIDCDisplayNameClaim:       getenv("ARGUS_OIDC_DISPLAY_NAME_CLAIM", "preferred_username"),
+		OIDCSigningAlgs:            getcsv("ARGUS_OIDC_SIGNING_ALGS", []string{"RS256"}),
+		OIDCDiscoveryTimeout:       getduration("ARGUS_OIDC_DISCOVERY_TIMEOUT", 5*time.Second),
+		OIDCProviderTimeout:        getduration("ARGUS_OIDC_PROVIDER_TIMEOUT", 3*time.Second),
 		IncidentGrouping:           getduration("ARGUS_INCIDENT_GROUPING_WINDOW", 5*time.Minute),
 		RemediationExecutor:        strings.ToLower(getenv("ARGUS_REMEDIATION_EXECUTOR", "local")),
 		HeliosBaseURL:              strings.TrimRight(getenv("ARGUS_HELIOS_BASE_URL", ""), "/"),
@@ -68,6 +86,23 @@ func Load() Config {
 		ApprovalSlackBotToken:      getenv("ARGUS_SLACK_BOT_TOKEN", ""),
 		ApprovalSlackApprovers:     getenv("ARGUS_SLACK_APPROVERS", ""),
 	}
+}
+
+func getcsv(key string, fallback []string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	var values []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 {
+		return fallback
+	}
+	return values
 }
 
 func getbool(key string, fallback bool) bool {

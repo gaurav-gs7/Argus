@@ -20,6 +20,8 @@ type Metrics struct {
 	ApprovalDecisionDuration          prometheus.Histogram
 	ApprovalEscalationsTotal          *prometheus.CounterVec
 	ApprovalNotificationFailuresTotal *prometheus.CounterVec
+	AuthenticationFailuresTotal       *prometheus.CounterVec
+	AuthorizationDenialsTotal         *prometheus.CounterVec
 }
 
 func MustRegister() *Metrics {
@@ -97,6 +99,14 @@ func MustRegister() *Metrics {
 			Name: "argus_approval_notification_failures_total",
 			Help: "Approval notification delivery failures",
 		}, []string{"transport"}),
+		AuthenticationFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_authentication_failures_total",
+			Help: "Rejected API authentication attempts by fail-closed reason",
+		}, []string{"reason"}),
+		AuthorizationDenialsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_authorization_denials_total",
+			Help: "Authenticated API requests denied by role and permission",
+		}, []string{"role", "permission"}),
 	}
 
 	prometheus.MustRegister(
@@ -117,6 +127,8 @@ func MustRegister() *Metrics {
 		m.ApprovalDecisionDuration,
 		m.ApprovalEscalationsTotal,
 		m.ApprovalNotificationFailuresTotal,
+		m.AuthenticationFailuresTotal,
+		m.AuthorizationDenialsTotal,
 	)
 
 	return m

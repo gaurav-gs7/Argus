@@ -21,7 +21,7 @@ func main() {
 		Short: "Argus operational CLI",
 	}
 	root.PersistentFlags().StringVar(&baseURL, "base-url", getenv("ARGUS_API_BASE_URL", "http://localhost:8080"), "Argus API base URL")
-	root.PersistentFlags().StringVar(&token, "token", getenv("ARGUS_API_TOKEN", "local-admin-token"), "Bearer token for Argus API")
+	root.PersistentFlags().StringVar(&token, "token", getenv("ARGUS_API_TOKEN", ""), "OIDC JWT access token for Argus API")
 
 	root.AddCommand(
 		incidentCmd(&baseURL, &token),
@@ -151,6 +151,9 @@ func runbookCmd(baseURL, token *string) *cobra.Command {
 }
 
 func printRequest(method, url string, body any, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("OIDC access token is required; set ARGUS_API_TOKEN or use --token")
+	}
 	var reader io.Reader
 	if body != nil {
 		payload, _ := json.Marshal(body)

@@ -38,7 +38,7 @@ type Server struct {
 	remediationService *remediation.Service
 	auditor            *audit.Service
 	metrics            *telemetry.Metrics
-	authenticator      *auth.Authenticator
+	authenticator      auth.Authenticator
 	approvalService    *approvals.Service
 	approvalCancel     context.CancelFunc
 	slackApproval      *approvals.SlackWorkflow
@@ -62,7 +62,19 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	}
 
 	metrics := telemetry.MustRegister()
-	authenticator, err := auth.NewAuthenticator(cfg.AuthTokens)
+	authenticator, err := auth.NewOIDCAuthenticator(ctx, auth.OIDCConfig{
+		IssuerURL:         cfg.OIDCIssuerURL,
+		Audience:          cfg.OIDCAudience,
+		JWKSURL:           cfg.OIDCJWKSURL,
+		RoleClaim:         cfg.OIDCRoleClaim,
+		RoleMappings:      cfg.OIDCRoleMappings,
+		EmailClaim:        cfg.OIDCEmailClaim,
+		DisplayNameClaim:  cfg.OIDCDisplayNameClaim,
+		SigningAlgs:       cfg.OIDCSigningAlgs,
+		DiscoveryTimeout:  cfg.OIDCDiscoveryTimeout,
+		ProviderTimeout:   cfg.OIDCProviderTimeout,
+		AllowInsecureHTTP: cfg.Env == "local" || cfg.Env == "test",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +166,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/v1/alerts/alertmanager", s.handleAlertmanager)
 	mux.HandleFunc("/v1/signals/manual", s.handleManualSignal)
+	mux.HandleFunc("/v1/auth/me", s.handleCurrentPrincipal)
 
 	mux.HandleFunc("/v1/incidents", s.handleIncidents)
 	mux.HandleFunc("/v1/incidents/", s.handleIncidentRoutes)
@@ -167,6 +180,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/runbooks/reindex", s.handleRunbookReindex)
 
 	return s.loggingMiddleware(s.authMiddleware(mux))
+}
+
+func (s *Server) handleCurrentPrincipal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		common.WriteError(w, http.StatusUnauthorized, "authenticated principal unavailable")
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, principal)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -476,8 +502,13 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			common.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := s.remediationService.Execute(r.Context(), remediationID, body.DryRun, actorFromRequest(r)); err != nil {
+		reused, err := s.remediationService.Execute(r.Context(), remediationID, body.DryRun, actorFromRequest(r))
+		if err != nil {
 			common.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if reused {
+			common.WriteJSON(w, http.StatusOK, map[string]string{"status": "reused"})
 			return
 		}
 		common.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
@@ -634,14 +665,23 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		principal, ok := s.authenticator.AuthenticateHeader(auth.BearerToken(r))
-		if !ok {
+		principal, err := s.authenticator.Authenticate(r.Context(), auth.BearerToken(r))
+		if err != nil {
+			reason := auth.FailureReason(err)
+			if s.metrics != nil {
+				s.metrics.AuthenticationFailuresTotal.WithLabelValues(reason).Inc()
+			}
+			s.logger.Warn("authentication rejected", "path", r.URL.Path, "reason", reason)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="argus", error="invalid_token"`)
 			common.WriteError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
 
 		permission := requiredPermission(r)
 		if permission != "" && !principal.Can(permission) {
+			if s.metrics != nil {
+				s.metrics.AuthorizationDenialsTotal.WithLabelValues(string(principal.Role), string(permission)).Inc()
+			}
 			common.WriteError(w, http.StatusForbidden, "role is not allowed to perform this action")
 			return
 		}
@@ -660,6 +700,8 @@ func requiredPermission(r *http.Request) auth.Permission {
 	method := r.Method
 
 	switch {
+	case path == "/v1/auth/me" && method == http.MethodGet:
+		return auth.PermissionView
 	case path == "/v1/alerts/alertmanager" || path == "/v1/signals/manual":
 		return auth.PermissionIngestSignal
 	case path == "/v1/incidents" && method == http.MethodGet:
@@ -746,7 +788,7 @@ func actorFromRequest(r *http.Request) string {
 	if !ok {
 		return "system"
 	}
-	return principal.Email
+	return principal.ID
 }
 
 func roleFromRequest(r *http.Request) string {

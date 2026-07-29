@@ -132,3 +132,36 @@ groups:
         annotations:
           summary: "A remediation timed out without a human approval decision"
           runbook: "remediation-safety"
+
+      - alert: ArgusAuthenticationFailuresHigh
+        expr: sum(increase(argus_authentication_failures_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: sev2
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus is rejecting an unusual number of OIDC tokens"
+          runbook: "oidc-authentication"
+
+      - alert: ArgusAuthorizationDenialsHigh
+        expr: sum(increase(argus_authorization_denials_total[5m])) > 5
+        for: 2m
+        labels:
+          severity: sev3
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus RBAC denials are increasing"
+          runbook: "oidc-authentication"
+
+      - alert: ArgusOIDCProviderUnavailable
+        expr: up{job="keycloak"} == 0
+        for: 2m
+        labels:
+          severity: sev2
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus local OIDC provider is unavailable"
+          runbook: "oidc-authentication"

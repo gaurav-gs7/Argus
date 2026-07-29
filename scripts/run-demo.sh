@@ -5,9 +5,17 @@ SCENARIO="${1:-postgres_connection_exhaustion}"
 API_URL="${ARGUS_API_URL:-http://localhost:8080}"
 PAYMENTS_URL="${ARGUS_PAYMENTS_URL:-http://localhost:9001}"
 EVIDENCE_DIR="${ARGUS_EVIDENCE_DIR:-artifacts/demo-evidence/${SCENARIO}}"
-PROPOSER_TOKEN="${ARGUS_PROPOSER_TOKEN:-local-operator-token}"
-APPROVER_TOKEN="${ARGUS_APPROVER_TOKEN:-local-admin-token}"
 WORKER_TIMEOUT_SECONDS="${ARGUS_WORKER_TIMEOUT_SECONDS:-30}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROPOSER_TOKEN="${ARGUS_PROPOSER_TOKEN:-}"
+APPROVER_TOKEN="${ARGUS_APPROVER_TOKEN:-}"
+
+if [[ -z "${PROPOSER_TOKEN}" ]]; then
+  PROPOSER_TOKEN="$("${SCRIPT_DIR}/oidc-token.sh" operator)"
+fi
+if [[ -z "${APPROVER_TOKEN}" ]]; then
+  APPROVER_TOKEN="$("${SCRIPT_DIR}/oidc-token.sh" admin)"
+fi
 
 mkdir -p "${EVIDENCE_DIR}"
 

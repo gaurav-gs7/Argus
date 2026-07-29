@@ -193,41 +193,41 @@ func (s *Service) Cancel(ctx context.Context, remediationID, actor string) error
 	})
 }
 
-func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool, actor string) error {
+func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool, actor string) (bool, error) {
 	remediation, err := s.store.GetRemediation(ctx, remediationID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if remediation.Status == StateSucceeded || remediation.Status == StateQueued || remediation.Status == StateRunning {
 		_ = s.auditor.Write(ctx, audit.Entry{
 			ActorID: actor, ActorType: "user", Action: "remediation.execution_reused", ResourceType: "remediation", ResourceID: remediationID,
 			AfterState: map[string]any{"status": remediation.Status, "idempotency_key": remediation.IdempotencyKey},
 		})
-		return nil
+		return true, nil
 	}
 	if remediation.Status == StateAwaitingApproval {
-		return fmt.Errorf("remediation requires approval")
+		return false, fmt.Errorf("remediation requires approval")
 	}
 	if IsTerminalState(remediation.Status) {
-		return fmt.Errorf("remediation cannot be executed from state %s", remediation.Status)
+		return false, fmt.Errorf("remediation cannot be executed from state %s", remediation.Status)
 	}
 	if err := RequireTransition(remediation.Status, StateQueued); err != nil {
-		return err
+		return false, err
 	}
 
 	incident, err := s.store.GetIncident(ctx, remediation.IncidentID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	start := time.Now()
 	outcome, err := s.exec.Execute(ctx, remediation, incident, dryRun)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if err := s.applyOutcome(ctx, remediation, outcome, dryRun); err != nil {
-		return err
+		return false, err
 	}
 	if strings.EqualFold(outcome.Status, StateFailed) {
 		s.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
@@ -238,7 +238,7 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	if strings.EqualFold(outcome.Status, StateSucceeded) {
 		action = "remediation.completed"
 	}
-	return s.auditor.Write(ctx, audit.Entry{
+	return false, s.auditor.Write(ctx, audit.Entry{
 		ActorID: actor, ActorType: "user", Action: action, ResourceType: "remediation", ResourceID: remediationID,
 		BeforeState: map[string]any{"status": remediation.Status},
 		AfterState:  map[string]any{"status": outcome.Status, "dry_run": dryRun, "executor": s.exec.Name(), "result": outcome.Result},

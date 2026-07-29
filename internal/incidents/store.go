@@ -20,7 +20,7 @@ func NewStore(db *sql.DB) *Store {
 
 func (s *Store) EnsureService(ctx context.Context, name string) (Service, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, owner, tier, environment, slo_availability, slo_latency_p95_ms, runbook_id, created_at
+		SELECT id, name, COALESCE(owner, ''), tier, environment, slo_availability, slo_latency_p95_ms, runbook_id, created_at
 		FROM services WHERE name = $1
 	`, name)
 
@@ -530,7 +530,7 @@ func (s *Store) CompleteRemediation(ctx context.Context, remediationID, status s
 
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, owner, tier, environment, slo_availability, slo_latency_p95_ms, runbook_id, created_at
+		SELECT id, name, COALESCE(owner, ''), tier, environment, slo_availability, slo_latency_p95_ms, runbook_id, created_at
 		FROM services
 		ORDER BY name
 	`)

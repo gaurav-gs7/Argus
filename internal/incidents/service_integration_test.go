@@ -38,6 +38,23 @@ func TestAlertIngestionPersistsAndGroupsIncident(t *testing.T) {
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
 	manager := incidents.NewServiceManager(store, auditor, 30*time.Minute)
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO services (id, name, owner, tier, environment)
+		VALUES ('svc_nullable_owner', 'nullable-owner-service', NULL, 'tier2', 'test')
+	`); err != nil {
+		t.Fatalf("insert service with nullable owner: %v", err)
+	}
+	services, err := store.ListServices(ctx)
+	if err != nil {
+		t.Fatalf("list service with nullable owner: %v", err)
+	}
+	if len(services) != 1 || services[0].Owner != "" {
+		t.Fatalf("nullable service owner should be represented as an empty value: %#v", services)
+	}
+	if service, err := store.EnsureService(ctx, "nullable-owner-service"); err != nil || service.Owner != "" {
+		t.Fatalf("read existing service with nullable owner: service=%#v err=%v", service, err)
+	}
+
 	startedAt := time.Now().UTC().Add(-time.Minute)
 	payload := incidents.AlertmanagerWebhook{
 		Status: "firing",

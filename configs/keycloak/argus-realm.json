@@ -1,0 +1,143 @@
+{
+  "realm": "argus",
+  "displayName": "Argus Local Identity",
+  "enabled": true,
+  "sslRequired": "external",
+  "defaultSignatureAlgorithm": "RS256",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "bruteForceProtected": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "argus-admin",
+        "description": "Argus administrators"
+      },
+      {
+        "name": "argus-operator",
+        "description": "Argus incident operators"
+      },
+      {
+        "name": "argus-viewer",
+        "description": "Argus read-only users"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "argus-api",
+      "name": "Argus API audience",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true
+    },
+    {
+      "clientId": "argus-demo-admin",
+      "name": "Argus local admin automation",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${ARGUS_DEMO_ADMIN_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "argus-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "argus-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "argus-demo-operator",
+      "name": "Argus local operator automation",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${ARGUS_DEMO_OPERATOR_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "argus-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "argus-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "argus-demo-viewer",
+      "name": "Argus local viewer automation",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${ARGUS_DEMO_VIEWER_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "argus-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "argus-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "argus-demo-admin-subject",
+      "username": "service-account-argus-demo-admin",
+      "enabled": true,
+      "serviceAccountClientId": "argus-demo-admin",
+      "realmRoles": [
+        "argus-admin"
+      ]
+    },
+    {
+      "id": "argus-demo-operator-subject",
+      "username": "service-account-argus-demo-operator",
+      "enabled": true,
+      "serviceAccountClientId": "argus-demo-operator",
+      "realmRoles": [
+        "argus-operator"
+      ]
+    },
+    {
+      "id": "argus-demo-viewer-subject",
+      "username": "service-account-argus-demo-viewer",
+      "enabled": true,
+      "serviceAccountClientId": "argus-demo-viewer",
+      "realmRoles": [
+        "argus-viewer"
+      ]
+    }
+  ]
+}

@@ -5,6 +5,7 @@ Core endpoints:
 - `GET /healthz`
 - `GET /readyz`
 - `GET /metrics`
+- `GET /v1/auth/me` (verified OIDC principal and mapped Argus role)
 - `POST /v1/alerts/alertmanager`
 - `GET /v1/incidents`
 - `POST /v1/incidents`
@@ -39,6 +40,8 @@ Approval decision body:
 }
 ```
 
-The actor is derived from the operator/admin bearer token. `reason` is required, a proposer cannot decide their own request by default, and replayed or expired decisions fail closed.
+The actor is derived from the verified OIDC token's issuer and subject. Signature, issuer, audience, expiry, signing algorithm, and role mapping are validated before authorization. `reason` is required, a proposer cannot decide their own request by default, and replayed or expired decisions fail closed.
+
+Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
 
 The Slack endpoint accepts Slack's form-encoded interactivity payload. A signed button callback opens a reason modal; only the signed modal submission decides the request. Slack user IDs must map to Argus identities using `ARGUS_SLACK_APPROVERS`.
