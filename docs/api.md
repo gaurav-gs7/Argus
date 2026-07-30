@@ -12,6 +12,7 @@ Core endpoints:
 - `GET /v1/incidents/{incident_id}`
 - `GET /v1/incidents/{incident_id}/timeline`
 - `GET /v1/incidents/{incident_id}/signals`
+- `GET /v1/incidents/{incident_id}/topology`
 - `GET /v1/incidents/{incident_id}/rca`
 - `POST /v1/incidents/{incident_id}/rca/generate`
 - `POST /v1/incidents/{incident_id}/remediations/suggest` (read-only, Verdikt-governed AI advice)
@@ -29,6 +30,8 @@ Core endpoints:
 - `GET /v1/audit/verify` (admin-only full hash-chain verification)
 - `GET /v1/services`
 - `POST /v1/services`
+- `GET /v1/topology`
+- `POST /v1/topology/dependencies` (admin)
 - `GET /v1/runbooks`
 - `POST /v1/runbooks/reindex`
 
@@ -48,3 +51,30 @@ Remediation execution returns `202 {"status":"queued"}` for a newly accepted exe
 Audit list responses include `chain_position`, `previous_hash`, `entry_hash`, and `hash_version`. Verification returns `200` with `valid: true` when every entry and the persisted chain head agree. It returns `409` with the first invalid position and a bounded reason when tampering, deletion, reordering, or a head mismatch is detected.
 
 The Slack endpoint accepts Slack's form-encoded interactivity payload. A signed button callback opens a reason modal; only the signed modal submission decides the request. Slack user IDs must map to Argus identities using `ARGUS_SLACK_APPROVERS`.
+
+Create or update a directed dependency:
+
+```json
+{
+  "service": "payments-api",
+  "depends_on": "postgres",
+  "dependency_type": "datastore",
+  "criticality": "critical"
+}
+```
+
+Alert ingestion returns both root incidents and batch-local correlation statistics:
+
+```json
+{
+  "incidents": [{"id": "inc_example", "service": "postgres"}],
+  "correlation": {
+    "alert_count": 20,
+    "incident_groups": 1,
+    "affected_service_count": 4,
+    "observed_roots": 1,
+    "inferred_roots": 0,
+    "suppressed_alert_count": 18
+  }
+}
+```

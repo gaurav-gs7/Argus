@@ -3,6 +3,8 @@ package incidents
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/gauravgs7/argus/internal/topology"
 )
 
 func TestBuildDedupeKey(t *testing.T) {
@@ -52,5 +54,43 @@ func TestAlertmanagerWebhookParsing(t *testing.T) {
 	}
 	if payload.Alerts[0].Labels["service"] != "payments-api" {
 		t.Fatalf("unexpected service label: %q", payload.Alerts[0].Labels["service"])
+	}
+}
+
+func TestTopologyGroupingNeverCrossesEnvironments(t *testing.T) {
+	graph := topology.New([]topology.Dependency{
+		{Service: "payments-api", DependsOn: "postgres"},
+	})
+	alerts := []normalizedAlert{
+		{service: "payments-api", environment: "production"},
+		{service: "postgres", environment: "production"},
+		{service: "payments-api", environment: "staging"},
+		{service: "postgres", environment: "staging"},
+	}
+
+	groups := topologyGroupsByEnvironment(graph, alerts)
+	if len(groups) != 2 {
+		t.Fatalf("mixed environments produced %d groups, want 2", len(groups))
+	}
+	if groups[0].Environment != "production" || groups[1].Environment != "staging" {
+		t.Fatalf("groups are not environment isolated and sorted: %#v", groups)
+	}
+	for _, group := range groups {
+		items := alertsForGroup(alerts, group)
+		if len(items) != 2 {
+			t.Fatalf("group %s included %d alerts, want 2", group.Environment, len(items))
+		}
+		for _, item := range items {
+			if item.environment != group.Environment {
+				t.Fatalf("group %s leaked alert from %s", group.Environment, item.environment)
+			}
+		}
+	}
+}
+
+func TestIncidentEnvironmentUsesDedupeKey(t *testing.T) {
+	incident := Incident{DedupeKey: BuildDedupeKey("payments-api", "High5xx", "production", "fp")}
+	if got := incidentEnvironment(incident); got != "production" {
+		t.Fatalf("incident environment=%q, want production", got)
 	}
 }

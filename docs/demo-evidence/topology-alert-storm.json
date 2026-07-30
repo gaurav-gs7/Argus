@@ -1,0 +1,64 @@
+{
+  "scenario": "topology_alert_storm",
+  "claim": "Twenty alert deliveries collapse into one observed root incident without discarding evidence.",
+  "input": {
+    "alert_count": 20,
+    "services": [
+      "nginx",
+      "checkout-api",
+      "payments-api",
+      "postgres"
+    ],
+    "dependency_edges": [
+      "nginx -> payments-api",
+      "checkout-api -> payments-api",
+      "payments-api -> postgres"
+    ]
+  },
+  "correlation": {
+    "incident_groups": 1,
+    "observed_roots": 1,
+    "inferred_roots": 0,
+    "root_service": "postgres",
+    "suppressed_alert_count": 18,
+    "preserved_signal_count": 20
+  },
+  "topology_analysis": {
+    "affected_services": [
+      "checkout-api",
+      "nginx",
+      "payments-api",
+      "postgres"
+    ],
+    "dependency_paths": [
+      [
+        "checkout-api",
+        "payments-api",
+        "postgres"
+      ],
+      [
+        "nginx",
+        "payments-api",
+        "postgres"
+      ],
+      [
+        "payments-api",
+        "postgres"
+      ]
+    ]
+  },
+  "deterministic_rca": {
+    "primary_hypothesis": "Failure at root dependency postgres",
+    "root_qualifier": "observed",
+    "confidence": 0.75,
+    "topology_confidence_adjustment": 0.03,
+    "summary": "Topology identifies the PostgreSQL failure domain without inventing an unsupported component-level failure mode."
+  },
+  "safety": {
+    "downstream_alerts_deleted": false,
+    "llm_used_for_grouping": false,
+    "inferred_root_confidence_inflated": false,
+    "topology_changes_audited": true
+  },
+  "regenerate": "make demo-alert-storm"
+}

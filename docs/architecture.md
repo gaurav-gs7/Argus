@@ -24,15 +24,30 @@ Argus can dispatch approved remediations to an external Helios control plane ins
 The correctness path does not depend on an LLM:
 
 1. Receive signal
-2. Normalize and deduplicate
-3. Persist incident and signal state
-4. Build a deterministic timeline
-5. Generate rule-based RCA hypotheses
-6. Propose typed remediations
-7. Apply policy checks
-8. Require approval for medium-risk operations
-9. Execute through registered handlers only
-10. Append every state change to the serialized SHA-256 audit hash chain
+2. Normalize the complete alert batch
+3. Walk the service dependency graph from symptoms toward shared upstream dependencies
+4. Choose an observed root when present, otherwise mark the common root as inferred
+5. Reuse or promote an open incident under a PostgreSQL advisory lock
+6. Persist every alert as evidence while suppressing downstream incident creation
+7. Build a deterministic timeline and topology snapshot
+8. Generate rule-based RCA hypotheses
+9. Propose typed remediations
+10. Apply policy checks and require approval for medium-risk operations
+11. Execute through registered handlers only
+12. Append every state change to the serialized SHA-256 audit hash chain
+
+## Topology Correlation
+
+`service_dependencies` stores directed `service -> depends_on` edges with dependency type and criticality. The correlator performs cycle-safe breadth-first graph walks and uses deterministic tie-breaking:
+
+1. maximize the number of alerted services covered by a candidate root
+2. minimize total dependency distance
+3. prefer an alerted root over an inferred root
+4. use lexical order as the final stable tie-break
+
+This converts an alert storm into root incident groups without discarding evidence. A downstream alert is stored in `signals`, emitted as a `downstream_alert_suppressed` timeline event, and appended to the audit chain. Root inference never receives the confidence increase reserved for an observed root. Independent dependency failures remain separate incidents.
+
+The ingestion lock is PostgreSQL-backed rather than process-local, so concurrent API replicas cannot race to create competing root incidents. It is deliberately coarse for the low-volume local profile; partitioned advisory locks are the natural scale-out path.
 
 ## Advisory AI Path
 
@@ -42,6 +57,7 @@ The AI service receives only structured evidence:
 - timeline events
 - matched runbook snippets
 - similar incidents
+- dependency paths, affected services, and suppression counts
 
 It can:
 

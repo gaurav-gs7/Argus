@@ -14,7 +14,7 @@
     "to": "now"
   },
   "title": "Argus Control Plane Overview",
-  "version": 5,
+  "version": 6,
   "templating": {
     "list": []
   },
@@ -714,6 +714,110 @@
         }
       ],
       "title": "Audit Ledger Head",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 56
+      },
+      "id": 27,
+      "targets": [
+        {
+          "expr": "sum(rate(argus_topology_alerts_total{disposition=\"suppressed\"}[5m])) / clamp_min(sum(rate(argus_topology_alerts_total[5m])), 0.000001)",
+          "refId": "A"
+        }
+      ],
+      "title": "Alert Storm Suppression Ratio",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 56
+      },
+      "id": 28,
+      "targets": [
+        {
+          "expr": "increase(argus_topology_alerts_total[15m])",
+          "legendFormat": "{{disposition}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Root vs Suppressed Alerts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 56
+      },
+      "id": 29,
+      "targets": [
+        {
+          "expr": "increase(argus_topology_incident_groups_total[15m])",
+          "legendFormat": "{{root_source}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Observed vs Inferred Roots",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 56
+      },
+      "id": 30,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(argus_topology_affected_services_bucket[15m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Alert-Storm Blast Radius p95",
       "type": "stat"
     }
   ]

@@ -186,6 +186,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/audit", s.handleAudit)
 	mux.HandleFunc("/v1/audit/verify", s.handleAuditVerify)
 	mux.HandleFunc("/v1/services", s.handleServices)
+	mux.HandleFunc("/v1/topology", s.handleTopology)
+	mux.HandleFunc("/v1/topology/dependencies", s.handleTopologyDependencies)
 	mux.HandleFunc("/v1/runbooks", s.handleRunbooks)
 	mux.HandleFunc("/v1/runbooks/reindex", s.handleRunbookReindex)
 
@@ -229,17 +231,18 @@ func (s *Server) handleAlertmanager(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := s.incidentManager.IngestAlertmanager(r.Context(), payload, actorFromRequest(r))
+	result, err := s.incidentManager.IngestAlertmanagerWithResult(r.Context(), payload, actorFromRequest(r))
 	if err != nil {
 		common.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	for _, incident := range created {
+	for _, incident := range result.Incidents {
 		s.metrics.IncidentsTotal.WithLabelValues("created", incident.Severity).Inc()
 	}
-	s.metrics.IncidentsOpen.Set(float64(len(created)))
-	common.WriteJSON(w, http.StatusAccepted, map[string]any{"incidents": created})
+	s.observeTopologyIngestion(result.Stats)
+	s.metrics.IncidentsOpen.Set(float64(len(result.Incidents)))
+	common.WriteJSON(w, http.StatusAccepted, result)
 }
 
 func (s *Server) handleIncidents(w http.ResponseWriter, r *http.Request) {
@@ -312,12 +315,13 @@ func (s *Server) handleManualSignal(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	created, err := s.incidentManager.IngestAlertmanager(r.Context(), payload, actorFromRequest(r))
+	result, err := s.incidentManager.IngestAlertmanagerWithResult(r.Context(), payload, actorFromRequest(r))
 	if err != nil {
 		common.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	common.WriteJSON(w, http.StatusAccepted, map[string]any{"incidents": created})
+	s.observeTopologyIngestion(result.Stats)
+	common.WriteJSON(w, http.StatusAccepted, result)
 }
 
 func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
@@ -363,6 +367,16 @@ func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 			common.WriteJSON(w, http.StatusOK, items)
 			return
+		case "topology":
+			if r.Method == http.MethodGet {
+				item, err := s.store.GetIncidentTopology(r.Context(), incidentID)
+				if err != nil {
+					common.WriteError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				common.WriteJSON(w, http.StatusOK, item)
+				return
+			}
 		case "rca":
 			if r.Method == http.MethodGet {
 				report, err := s.store.GetLatestRCAReport(r.Context(), incidentID)
@@ -664,6 +678,79 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.store.ListServiceDependencies(r.Context())
+	if err != nil {
+		common.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, map[string]any{"dependencies": items})
+}
+
+func (s *Server) handleTopologyDependencies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body incidents.ServiceDependencyRequest
+	if err := common.ReadJSON(r, &body); err != nil {
+		common.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Service) == "" || strings.TrimSpace(body.DependsOn) == "" {
+		common.WriteError(w, http.StatusBadRequest, "service and depends_on are required")
+		return
+	}
+	if body.DependencyType != "" && body.DependencyType != "synchronous" &&
+		body.DependencyType != "asynchronous" && body.DependencyType != "datastore" && body.DependencyType != "edge" {
+		common.WriteError(w, http.StatusBadRequest, "unsupported dependency_type")
+		return
+	}
+	if body.Criticality != "" && body.Criticality != "critical" &&
+		body.Criticality != "degraded" && body.Criticality != "optional" {
+		common.WriteError(w, http.StatusBadRequest, "unsupported criticality")
+		return
+	}
+	item, err := s.store.UpsertServiceDependency(r.Context(), body)
+	if err != nil {
+		common.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_ = s.auditor.Write(r.Context(), audit.Entry{
+		ActorID:      actorFromRequest(r),
+		ActorType:    "user",
+		Action:       "service_dependency.upserted",
+		ResourceType: "service_dependency",
+		ResourceID:   item.ID,
+		AfterState: map[string]any{
+			"service":         item.Service,
+			"depends_on":      item.DependsOn,
+			"dependency_type": item.DependencyType,
+			"criticality":     item.Criticality,
+		},
+	})
+	common.WriteJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) observeTopologyIngestion(stats incidents.IngestionStats) {
+	if s.metrics == nil || stats.AlertCount == 0 {
+		return
+	}
+	rootAlerts := stats.AlertCount - stats.SuppressedAlertCount
+	s.metrics.TopologyAlertsTotal.WithLabelValues("root").Add(float64(rootAlerts))
+	s.metrics.TopologyAlertsTotal.WithLabelValues("suppressed").Add(float64(stats.SuppressedAlertCount))
+	s.metrics.TopologyIncidentGroupsTotal.WithLabelValues("observed").Add(float64(stats.ObservedRoots))
+	s.metrics.TopologyIncidentGroupsTotal.WithLabelValues("inferred").Add(float64(stats.InferredRoots))
+	s.metrics.TopologySuppressionRatio.Observe(float64(stats.SuppressedAlertCount) / float64(stats.AlertCount))
+	if stats.IncidentGroups > 0 {
+		s.metrics.TopologyAffectedServices.Observe(float64(stats.AffectedServiceCount) / float64(stats.IncidentGroups))
+	}
+}
+
 func (s *Server) handleRunbooks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -746,7 +833,7 @@ func requiredPermission(r *http.Request) auth.Permission {
 		}
 		if len(parts) == 2 {
 			switch parts[1] {
-			case "timeline", "signals", "rca", "remediations":
+			case "timeline", "signals", "topology", "rca", "remediations":
 				if method == http.MethodGet {
 					return auth.PermissionView
 				}
@@ -788,6 +875,10 @@ func requiredPermission(r *http.Request) auth.Permission {
 	case path == "/v1/services" && method == http.MethodGet:
 		return auth.PermissionView
 	case path == "/v1/services" && method == http.MethodPost:
+		return auth.PermissionManageService
+	case path == "/v1/topology" && method == http.MethodGet:
+		return auth.PermissionView
+	case path == "/v1/topology/dependencies" && method == http.MethodPost:
 		return auth.PermissionManageService
 	case path == "/v1/runbooks" && method == http.MethodGet:
 		return auth.PermissionView

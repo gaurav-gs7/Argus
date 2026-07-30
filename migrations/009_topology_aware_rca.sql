@@ -1,13 +1,3 @@
-CREATE TABLE IF NOT EXISTS worker_heartbeats (
-    worker_id TEXT PRIMARY KEY,
-    hostname TEXT NOT NULL,
-    version TEXT NOT NULL,
-    supported_actions TEXT[] NOT NULL,
-    running_jobs INTEGER NOT NULL DEFAULT 0,
-    last_heartbeat_at TIMESTAMPTZ NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('healthy', 'stale', 'dead'))
-);
-
 CREATE TABLE IF NOT EXISTS service_dependencies (
     id TEXT PRIMARY KEY,
     service_id TEXT NOT NULL REFERENCES services(id),
@@ -22,3 +12,11 @@ CREATE TABLE IF NOT EXISTS service_dependencies (
     UNIQUE(service_id, depends_on_service_id),
     CHECK(service_id <> depends_on_service_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_service_dependencies_service
+    ON service_dependencies(service_id);
+CREATE INDEX IF NOT EXISTS idx_service_dependencies_target
+    ON service_dependencies(depends_on_service_id);
+
+ALTER TABLE rca_reports
+    ADD COLUMN IF NOT EXISTS topology_analysis JSONB NOT NULL DEFAULT '{}'::jsonb;

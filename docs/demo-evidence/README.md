@@ -11,13 +11,15 @@ This directory contains committed reviewer-friendly snapshots for the five Argus
 | Bad config rollout | [bad-config-rollout.json](bad-config-rollout.json) |
 | AI governance with Verdikt | [ai-governance-verdikt.json](ai-governance-verdikt.json) |
 | Human approval workflow | [human-approval-workflow.json](human-approval-workflow.json) |
+| Topology alert storm | [topology-alert-storm.json](topology-alert-storm.json) |
 
 Regenerate live evidence locally:
 
 ```bash
 make up
 make seed
+make demo-alert-storm
 make demo-postgres-exhaustion
 ```
 
-The snapshots show the intended evidence shape: incident metadata, correlated timeline, deterministic RCA, policy-gated remediation proposal, identity-bound approval, and safety notes.
+The snapshots show the intended evidence shape: root incident metadata, topology and correlated timeline, deterministic RCA, policy-gated remediation proposal, identity-bound approval, and safety notes.

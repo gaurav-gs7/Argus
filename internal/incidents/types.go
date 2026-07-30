@@ -1,6 +1,10 @@
 package incidents
 
-import "time"
+import (
+	"time"
+
+	"github.com/gauravgs7/argus/internal/topology"
+)
 
 const (
 	StatusDetected            = "detected"
@@ -71,17 +75,49 @@ type TimelineEvent struct {
 }
 
 type RCAReport struct {
-	ID                   string    `json:"id"`
-	IncidentID           string    `json:"incident_id"`
-	DeterministicSummary string    `json:"deterministic_summary"`
-	LLMSummary           string    `json:"llm_summary,omitempty"`
-	PrimaryHypothesis    string    `json:"primary_hypothesis"`
-	ContributingFactors  []string  `json:"contributing_factors,omitempty"`
-	Evidence             []string  `json:"evidence"`
-	Confidence           float64   `json:"confidence"`
-	ModelBackend         string    `json:"model_backend,omitempty"`
-	ModelName            string    `json:"model_name,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
+	ID                   string           `json:"id"`
+	IncidentID           string           `json:"incident_id"`
+	DeterministicSummary string           `json:"deterministic_summary"`
+	LLMSummary           string           `json:"llm_summary,omitempty"`
+	PrimaryHypothesis    string           `json:"primary_hypothesis"`
+	ContributingFactors  []string         `json:"contributing_factors,omitempty"`
+	Evidence             []string         `json:"evidence"`
+	Confidence           float64          `json:"confidence"`
+	ModelBackend         string           `json:"model_backend,omitempty"`
+	ModelName            string           `json:"model_name,omitempty"`
+	Topology             IncidentTopology `json:"topology"`
+	CreatedAt            time.Time        `json:"created_at"`
+}
+
+type IncidentTopology struct {
+	IncidentID           string          `json:"incident_id"`
+	RootService          string          `json:"root_service"`
+	RootInferred         bool            `json:"root_inferred"`
+	AffectedServices     []string        `json:"affected_services"`
+	AlertCount           int             `json:"alert_count"`
+	SuppressedAlertCount int             `json:"suppressed_alert_count"`
+	Paths                []topology.Path `json:"dependency_paths"`
+}
+
+type IngestionStats struct {
+	AlertCount           int `json:"alert_count"`
+	IncidentGroups       int `json:"incident_groups"`
+	AffectedServiceCount int `json:"affected_service_count"`
+	ObservedRoots        int `json:"observed_roots"`
+	InferredRoots        int `json:"inferred_roots"`
+	SuppressedAlertCount int `json:"suppressed_alert_count"`
+}
+
+type IngestionResult struct {
+	Incidents []Incident     `json:"incidents"`
+	Stats     IngestionStats `json:"correlation"`
+}
+
+type ServiceDependencyRequest struct {
+	Service        string `json:"service"`
+	DependsOn      string `json:"depends_on"`
+	DependencyType string `json:"dependency_type"`
+	Criticality    string `json:"criticality"`
 }
 
 type RemediationAction struct {

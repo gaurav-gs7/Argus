@@ -25,6 +25,10 @@ type Metrics struct {
 	AuditVerificationsTotal           *prometheus.CounterVec
 	AuditChainIntegrity               prometheus.Gauge
 	AuditChainHeadPosition            prometheus.Gauge
+	TopologyAlertsTotal               *prometheus.CounterVec
+	TopologyIncidentGroupsTotal       *prometheus.CounterVec
+	TopologySuppressionRatio          prometheus.Histogram
+	TopologyAffectedServices          prometheus.Histogram
 }
 
 func MustRegister() *Metrics {
@@ -122,6 +126,24 @@ func MustRegister() *Metrics {
 			Name: "argus_audit_chain_head_position",
 			Help: "Persisted position of the latest audit ledger entry",
 		}),
+		TopologyAlertsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_topology_alerts_total",
+			Help: "Alert deliveries processed by topology disposition",
+		}, []string{"disposition"}),
+		TopologyIncidentGroupsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_topology_incident_groups_total",
+			Help: "Topology-correlated incident groups by root source",
+		}, []string{"root_source"}),
+		TopologySuppressionRatio: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "argus_topology_suppression_ratio",
+			Help:    "Fraction of alert deliveries attached as downstream evidence instead of separate incidents",
+			Buckets: []float64{0, 0.25, 0.5, 0.75, 0.9, 0.95, 1},
+		}),
+		TopologyAffectedServices: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "argus_topology_affected_services",
+			Help:    "Number of alerted services represented by one topology-correlated incident batch",
+			Buckets: []float64{1, 2, 3, 5, 8, 13, 20, 50},
+		}),
 	}
 
 	prometheus.MustRegister(
@@ -147,6 +169,10 @@ func MustRegister() *Metrics {
 		m.AuditVerificationsTotal,
 		m.AuditChainIntegrity,
 		m.AuditChainHeadPosition,
+		m.TopologyAlertsTotal,
+		m.TopologyIncidentGroupsTotal,
+		m.TopologySuppressionRatio,
+		m.TopologyAffectedServices,
 	)
 
 	return m

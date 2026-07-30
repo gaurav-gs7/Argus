@@ -1,11 +1,14 @@
 package rca
 
 import (
+	"math"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/incidents"
+	"github.com/gauravgs7/argus/internal/topology"
 )
 
 func TestAuthorizeAIRequestUsesServiceCredential(t *testing.T) {
@@ -69,5 +72,108 @@ func TestBuildDeterministicRCAFallsBackToDiagnostics(t *testing.T) {
 	}
 	if len(actions) != 1 || actions[0].ActionType != "collect_diagnostics" || actions[0].Risk != "low" {
 		t.Fatalf("expected low-risk diagnostics fallback, got %+v", actions)
+	}
+}
+
+func TestEnrichWithObservedTopologyRaisesConfidenceAndExplainsBlastRadius(t *testing.T) {
+	summary, confidence, evidence, factors := enrichWithTopology(
+		"Database evidence matched.",
+		0.81,
+		[]string{"connection pool saturated"},
+		nil,
+		incidents.IncidentTopology{
+			RootService:          "postgres",
+			AffectedServices:     []string{"checkout-api", "nginx", "payments-api", "postgres"},
+			AlertCount:           20,
+			SuppressedAlertCount: 18,
+			Paths: []topology.Path{{
+				From:     "nginx",
+				To:       "postgres",
+				Services: []string{"nginx", "payments-api", "postgres"},
+			}},
+		},
+	)
+	if math.Abs(confidence-0.84) > 0.000001 {
+		t.Fatalf("confidence=%v, want 0.84", confidence)
+	}
+	if !strings.Contains(summary, "observed root service postgres") || !strings.Contains(summary, "suppressed 18 downstream alerts") {
+		t.Fatalf("topology summary missing root or suppression context: %q", summary)
+	}
+	if len(evidence) != 3 || len(factors) != 1 {
+		t.Fatalf("expected topology evidence and dependency path, got evidence=%#v factors=%#v", evidence, factors)
+	}
+}
+
+func TestEnrichWithInferredTopologyDoesNotInflateConfidence(t *testing.T) {
+	_, confidence, _, _ := enrichWithTopology(
+		"Dependency evidence matched.",
+		0.72,
+		nil,
+		nil,
+		incidents.IncidentTopology{
+			RootService:          "payments-api",
+			RootInferred:         true,
+			AffectedServices:     []string{"checkout-api", "nginx"},
+			AlertCount:           2,
+			SuppressedAlertCount: 2,
+		},
+	)
+	if confidence != 0.72 {
+		t.Fatalf("inferred root must not increase confidence: got %v", confidence)
+	}
+}
+
+func TestTopologyFallbackNamesFailureDomainWithoutInventingFailureMode(t *testing.T) {
+	incident := incidents.Incident{Title: "Downstream request failures"}
+	analysis := incidents.IncidentTopology{
+		RootService:          "postgres",
+		AffectedServices:     []string{"checkout-api", "payments-api", "postgres"},
+		AlertCount:           12,
+		SuppressedAlertCount: 10,
+	}
+	summary, hypothesis, confidence, evidence, factors, candidates := applyTopologyFallback(
+		incident,
+		analysis,
+		"insufficient",
+		"Insufficient evidence for a high-confidence root cause",
+		0.35,
+		nil,
+		nil,
+		nil,
+	)
+	if hypothesis != "Failure at root dependency postgres" {
+		t.Fatalf("unexpected topology hypothesis: %q", hypothesis)
+	}
+	if strings.Contains(strings.ToLower(hypothesis), "connection pool") || strings.Contains(strings.ToLower(summary), "connection pool") {
+		t.Fatalf("topology fallback invented an unsupported failure mode: hypothesis=%q summary=%q", hypothesis, summary)
+	}
+	if confidence != 0.72 || len(evidence) != 2 || len(factors) != 1 {
+		t.Fatalf("unexpected bounded topology score: confidence=%v evidence=%#v factors=%#v", confidence, evidence, factors)
+	}
+	if len(candidates) != 1 || candidates[0].ActionType != "collect_diagnostics" ||
+		candidates[0].Target != "postgres" || candidates[0].Risk != "low" {
+		t.Fatalf("topology-only evidence must produce diagnostics-only action: %#v", candidates)
+	}
+}
+
+func TestInferredTopologyFallbackUsesLowerConfidence(t *testing.T) {
+	_, _, confidence, _, _, _ := applyTopologyFallback(
+		incidents.Incident{Title: "Sibling service failures"},
+		incidents.IncidentTopology{
+			RootService:          "payments-api",
+			RootInferred:         true,
+			AffectedServices:     []string{"checkout-api", "nginx"},
+			AlertCount:           2,
+			SuppressedAlertCount: 2,
+		},
+		"",
+		"Insufficient evidence for a high-confidence root cause",
+		0.35,
+		nil,
+		nil,
+		nil,
+	)
+	if confidence != 0.58 {
+		t.Fatalf("inferred topology confidence=%v, want 0.58", confidence)
 	}
 }

@@ -62,6 +62,11 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		s.metrics.RCAJobsTotal.WithLabelValues("failed").Inc()
 		return incidents.RCAReport{}, nil, err
 	}
+	topologyAnalysis, err := s.store.GetIncidentTopology(ctx, incidentID)
+	if err != nil {
+		s.metrics.RCAJobsTotal.WithLabelValues("failed").Inc()
+		return incidents.RCAReport{}, nil, err
+	}
 
 	correlated := s.correlator.Correlate(incident, signals)
 	for _, event := range correlated.Events {
@@ -70,6 +75,12 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 	}
 
 	summary, hypothesis, confidence, evidence, factors, candidates := buildDeterministicRCA(incident, signals)
+	summary, hypothesis, confidence, evidence, factors, candidates = applyTopologyFallback(
+		incident, topologyAnalysis, summary, hypothesis, confidence, evidence, factors, candidates,
+	)
+	summary, confidence, evidence, factors = enrichWithTopology(
+		summary, confidence, evidence, factors, topologyAnalysis,
+	)
 	report := incidents.RCAReport{
 		IncidentID:           incidentID,
 		DeterministicSummary: summary,
@@ -78,9 +89,12 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		Evidence:             evidence,
 		Confidence:           confidence,
 		ModelBackend:         "deterministic",
+		Topology:             topologyAnalysis,
 	}
 
-	if llmSummary, backend, model, err := s.callAdvisor(ctx, incident, evidence, hypothesis, confidence); err == nil {
+	if llmSummary, backend, model, err := s.callAdvisor(
+		ctx, incident, evidence, hypothesis, confidence, topologyAnalysis,
+	); err == nil {
 		report.LLMSummary = llmSummary
 		report.ModelBackend = backend
 		report.ModelName = model
@@ -101,6 +115,80 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		return report, candidates, nil
 	}
 	return saved, candidates, nil
+}
+
+func applyTopologyFallback(
+	incident incidents.Incident,
+	analysis incidents.IncidentTopology,
+	summary, hypothesis string,
+	confidence float64,
+	evidence, factors []string,
+	candidates []Candidate,
+) (string, string, float64, []string, []string, []Candidate) {
+	if hypothesis != "Insufficient evidence for a high-confidence root cause" ||
+		analysis.SuppressedAlertCount == 0 || analysis.RootService == "" {
+		return summary, hypothesis, confidence, evidence, factors, candidates
+	}
+
+	rootEvidence := "shared dependency inferred from downstream alert paths"
+	confidence = 0.58
+	if !analysis.RootInferred {
+		rootEvidence = "root service emitted alert evidence in the incident window"
+		confidence = 0.72
+	}
+	hypothesis = fmt.Sprintf("Failure at root dependency %s", analysis.RootService)
+	summary = fmt.Sprintf(
+		"Topology places the failure domain for incident %q at %s. It establishes the affected dependency but not the component-level failure mode.",
+		incident.Title,
+		analysis.RootService,
+	)
+	evidence = []string{
+		rootEvidence,
+		fmt.Sprintf("%d alerts across %d services share dependency root %s", analysis.AlertCount, len(analysis.AffectedServices), analysis.RootService),
+	}
+	factors = []string{"specific metric, log, or trace evidence is still required to identify the failure mode"}
+	candidates = []Candidate{{
+		ActionType: "collect_diagnostics",
+		Target:     analysis.RootService,
+		Risk:       "low",
+	}}
+	return summary, hypothesis, confidence, evidence, factors, candidates
+}
+
+func enrichWithTopology(
+	summary string,
+	confidence float64,
+	evidence []string,
+	factors []string,
+	analysis incidents.IncidentTopology,
+) (string, float64, []string, []string) {
+	if analysis.SuppressedAlertCount == 0 {
+		return summary, confidence, evidence, factors
+	}
+	rootQualifier := "observed"
+	if analysis.RootInferred {
+		rootQualifier = "inferred"
+	} else {
+		confidence = clamp(confidence+0.03, 0.35, 0.95)
+	}
+	summary = fmt.Sprintf(
+		"%s Topology correlation identified %s root service %s, grouped %d alerts across %d services, and suppressed %d downstream alerts.",
+		summary,
+		rootQualifier,
+		analysis.RootService,
+		analysis.AlertCount,
+		len(analysis.AffectedServices),
+		analysis.SuppressedAlertCount,
+	)
+	evidence = appendEvidence(
+		evidence,
+		fmt.Sprintf("%d downstream alerts were suppressed behind root service %s", analysis.SuppressedAlertCount, analysis.RootService),
+		fmt.Sprintf("blast radius includes %s", strings.Join(analysis.AffectedServices, ", ")),
+	)
+	for _, path := range analysis.Paths {
+		factors = appendEvidence(factors, "dependency path: "+strings.Join(path.Services, " -> "))
+	}
+	return summary, confidence, evidence, factors
 }
 
 func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Signal) (summary, hypothesis string, confidence float64, evidence []string, factors []string, candidates []Candidate) {
@@ -203,7 +291,14 @@ func clamp(value, min, max float64) float64 {
 	return value
 }
 
-func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, evidence []string, hypothesis string, confidence float64) (summary, backend, model string, err error) {
+func (s *Service) callAdvisor(
+	ctx context.Context,
+	incident incidents.Incident,
+	evidence []string,
+	hypothesis string,
+	confidence float64,
+	topologyAnalysis incidents.IncidentTopology,
+) (summary, backend, model string, err error) {
 	if s.aiServiceURL == "" {
 		return "", "", "", fmt.Errorf("ai service disabled")
 	}
@@ -219,6 +314,7 @@ func (s *Service) callAdvisor(ctx context.Context, incident incidents.Incident, 
 		"primary_hypothesis": hypothesis,
 		"evidence":           evidence,
 		"confidence":         confidence,
+		"topology":           topologyAnalysis,
 	}
 
 	body, _ := json.Marshal(request)
@@ -267,7 +363,14 @@ func (s *Service) SuggestRemediations(ctx context.Context, incidentID string) (m
 	if err != nil {
 		return nil, err
 	}
-	_, _, confidence, evidence, _, candidates := buildDeterministicRCA(incident, signals)
+	topologyAnalysis, err := s.store.GetIncidentTopology(ctx, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	summary, hypothesis, confidence, evidence, factors, candidates := buildDeterministicRCA(incident, signals)
+	_, _, confidence, evidence, _, candidates = applyTopologyFallback(
+		incident, topologyAnalysis, summary, hypothesis, confidence, evidence, factors, candidates,
+	)
 	request := map[string]any{
 		"incident": map[string]any{
 			"id":          incident.ID,
@@ -279,6 +382,7 @@ func (s *Service) SuggestRemediations(ctx context.Context, incidentID string) (m
 		"evidence":                 evidence,
 		"deterministic_candidates": candidates,
 		"confidence":               confidence,
+		"topology":                 topologyAnalysis,
 	}
 	body, err := json.Marshal(request)
 	if err != nil {

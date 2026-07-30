@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gauravgs7/argus/internal/auth"
+	"github.com/gauravgs7/argus/internal/incidents"
 	"github.com/gauravgs7/argus/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -31,6 +32,7 @@ func TestRequiredPermissionForProtectedRoutes(t *testing.T) {
 		{http.MethodPost, "/v1/incidents/inc_1/resolve", auth.PermissionManageIncident},
 		{http.MethodGet, "/v1/incidents/inc_1/timeline", auth.PermissionView},
 		{http.MethodGet, "/v1/incidents/inc_1/signals", auth.PermissionView},
+		{http.MethodGet, "/v1/incidents/inc_1/topology", auth.PermissionView},
 		{http.MethodGet, "/v1/incidents/inc_1/rca", auth.PermissionView},
 		{http.MethodGet, "/v1/incidents/inc_1/remediations", auth.PermissionView},
 		{http.MethodPost, "/v1/incidents/inc_1/rca/generate", auth.PermissionGenerateRCA},
@@ -48,6 +50,8 @@ func TestRequiredPermissionForProtectedRoutes(t *testing.T) {
 		{http.MethodGet, "/v1/audit/verify", auth.PermissionViewAudit},
 		{http.MethodGet, "/v1/services", auth.PermissionView},
 		{http.MethodPost, "/v1/services", auth.PermissionManageService},
+		{http.MethodGet, "/v1/topology", auth.PermissionView},
+		{http.MethodPost, "/v1/topology/dependencies", auth.PermissionManageService},
 		{http.MethodGet, "/v1/runbooks", auth.PermissionView},
 		{http.MethodPost, "/v1/runbooks/reindex", auth.PermissionReindexRunbook},
 		{http.MethodGet, "/v1/not-a-route", auth.PermissionView},
@@ -208,6 +212,50 @@ func TestAuthMiddlewareEmitsFailureAndDenialMetrics(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), denied)
 	if got := testutil.ToFloat64(metrics.AuthorizationDenialsTotal.WithLabelValues("viewer", "manage_service")); got != 1 {
 		t.Fatalf("authorization denial metric=%v, want 1", got)
+	}
+}
+
+func TestObserveTopologyIngestionSeparatesRootAndSuppressedAlerts(t *testing.T) {
+	metrics := &telemetry.Metrics{
+		TopologyAlertsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_topology_alerts_total",
+		}, []string{"disposition"}),
+		TopologyIncidentGroupsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_topology_groups_total",
+		}, []string{"root_source"}),
+		TopologySuppressionRatio: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "test_topology_suppression_ratio",
+		}),
+		TopologyAffectedServices: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "test_topology_affected_services",
+		}),
+	}
+	srv := &Server{metrics: metrics}
+	srv.observeTopologyIngestion(incidents.IngestionStats{
+		AlertCount:           20,
+		IncidentGroups:       1,
+		AffectedServiceCount: 4,
+		ObservedRoots:        1,
+		SuppressedAlertCount: 18,
+	})
+
+	if got := testutil.ToFloat64(metrics.TopologyAlertsTotal.WithLabelValues("root")); got != 2 {
+		t.Fatalf("root alert metric=%v, want 2", got)
+	}
+	if got := testutil.ToFloat64(metrics.TopologyAlertsTotal.WithLabelValues("suppressed")); got != 18 {
+		t.Fatalf("suppressed alert metric=%v, want 18", got)
+	}
+	if got := testutil.ToFloat64(metrics.TopologyIncidentGroupsTotal.WithLabelValues("observed")); got != 1 {
+		t.Fatalf("observed root metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.TopologyIncidentGroupsTotal.WithLabelValues("inferred")); got != 0 {
+		t.Fatalf("inferred root metric=%v, want 0", got)
+	}
+	if got := testutil.CollectAndCount(metrics.TopologySuppressionRatio); got != 1 {
+		t.Fatalf("suppression histogram metric count=%v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(metrics.TopologyAffectedServices); got != 1 {
+		t.Fatalf("affected-services histogram metric count=%v, want 1", got)
 	}
 }
 

@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-alert-storm demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -70,6 +70,9 @@ ci: lint test ai-test py-compile compose-check
 
 reset:
 	./scripts/reset-local.sh
+
+demo-alert-storm:
+	./scripts/run-alert-storm-demo.sh
 
 demo-postgres-exhaustion:
 	./scripts/run-demo.sh postgres_connection_exhaustion

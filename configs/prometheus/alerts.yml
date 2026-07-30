@@ -176,3 +176,14 @@ groups:
         annotations:
           summary: "Argus detected a tamper-evident audit chain integrity violation"
           runbook: "audit-integrity"
+
+      - alert: ArgusAlertStormNotCorrelating
+        expr: sum(increase(argus_topology_alerts_total[5m])) > 20 and sum(increase(argus_topology_alerts_total{disposition="suppressed"}[5m])) == 0
+        for: 2m
+        labels:
+          severity: sev2
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus is ingesting an alert storm without downstream suppression"
+          runbook: "incident-lifecycle"

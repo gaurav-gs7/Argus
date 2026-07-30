@@ -5,6 +5,7 @@ Argus is a production-style SRE control plane for incident detection, determinis
 It is designed to feel like an internal reliability platform rather than a generic AI log chatbot:
 
 - incidents are created from observability signals
+- dependency-aware correlation collapses downstream alert storms into one root incident
 - RCA is built from deterministic evidence first
 - the LLM is advisory only and never in the correctness path
 - Verdikt governs every AI remediation proposal in policy-only mode
@@ -42,21 +43,21 @@ In the current bridge, Argus submits a trusted Helios `persist_artifact` workflo
 
 ```text
 OIDC/JWKS ---------------->+
-Observability signals -> Argus API -> Deterministic RCA -> AI advisory
-                                      |                 |             |
-                                      |                 |             v
-                                      |                 |      Verdikt PROPOSE_ONLY
-                                      |                 |             |
-                                      v                 v             v
-                                 PostgreSQL       Go Policy     Typed suggestions
-                                      |                 |             |
-                                      v                 v             |
-                              Audit Hash Chain   Durable approval <---+
-                                                        |
-                                             Slack / signed webhook
-                                                        |
-                                                        v
-                                                NATS / Helios executor
+Observability signals -> Service graph -> Root incident -> Deterministic RCA
+                              |               |                 |
+                              |               v                 v
+                              |          PostgreSQL        AI advisory
+                              |               |                 |
+                              v               v                 v
+                     Suppressed evidence  Audit chain    Verdikt PROPOSE_ONLY
+                                                              |
+                                                              v
+                                                     Typed suggestions
+                                                              |
+                                               Go policy + human approval
+                                                              |
+                                                              v
+                                                    NATS / Helios executor
 ```
 
 ## Quick Start
@@ -85,6 +86,14 @@ That flow:
 - generates deterministic RCA
 - proposes policy-gated remediation
 - writes JSON evidence under `artifacts/demo-evidence/postgres_connection_exhaustion/`
+
+The topology demo is the stronger incident-correlation walkthrough:
+
+```bash
+make demo-alert-storm
+```
+
+It sends twenty alerts across Nginx, checkout, payments, and PostgreSQL. Argus traverses the seeded dependency graph, opens one PostgreSQL-root incident, attaches eighteen downstream alerts as suppressed evidence, generates topology-enriched deterministic RCA, and writes the complete proof under `artifacts/demo-evidence/topology-alert-storm/`.
 
 ## Local Profiles
 
@@ -149,6 +158,7 @@ A captured end-to-end governance run is committed at [docs/demo-evidence/ai-gove
 - high-risk actions are blocked
 - every state-changing operation appends to a verifiable SHA-256 audit hash chain
 - duplicate alerts are deduplicated
+- downstream alert storms are grouped behind an observed or explicitly marked inferred root
 - duplicate remediation executions are ignored
 
 ## Tamper-Evident Audit Ledger
@@ -186,7 +196,7 @@ This repository includes:
 
 - Go API, worker, CLI, and failure injector
 - deterministic incident ingestion and deduplication
-- deterministic incident correlation and RCA scoring
+- deterministic topology-aware incident correlation, downstream suppression, and RCA scoring
 - advisory AI service with `mock`, `ollama`, and `gemini` adapters
 - local observability configuration
 - Docker Compose profiles

@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/common"
+	"github.com/gauravgs7/argus/internal/topology"
 )
 
 type Store struct {
@@ -16,6 +18,24 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+func (s *Store) LockIncidentIngestion(ctx context.Context) (func(), error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reserve topology ingestion connection: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext('argus_topology_ingestion'))`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("acquire topology ingestion lock: %w", err)
+	}
+
+	return func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(releaseCtx, `SELECT pg_advisory_unlock(hashtext('argus_topology_ingestion'))`)
+		_ = conn.Close()
+	}, nil
 }
 
 func (s *Store) EnsureService(ctx context.Context, name string) (Service, error) {
@@ -47,6 +67,79 @@ func (s *Store) EnsureService(ctx context.Context, name string) (Service, error)
 		return Service{}, fmt.Errorf("insert service: %w", err)
 	}
 	return svc, nil
+}
+
+func (s *Store) UpsertServiceDependency(ctx context.Context, req ServiceDependencyRequest) (topology.Dependency, error) {
+	service, err := s.EnsureService(ctx, req.Service)
+	if err != nil {
+		return topology.Dependency{}, err
+	}
+	dependsOn, err := s.EnsureService(ctx, req.DependsOn)
+	if err != nil {
+		return topology.Dependency{}, err
+	}
+	if service.ID == dependsOn.ID {
+		return topology.Dependency{}, fmt.Errorf("service cannot depend on itself")
+	}
+	if req.DependencyType == "" {
+		req.DependencyType = "synchronous"
+	}
+	if req.Criticality == "" {
+		req.Criticality = "critical"
+	}
+
+	item := topology.Dependency{
+		ID:             common.NewID("dep"),
+		ServiceID:      service.ID,
+		Service:        service.Name,
+		DependsOnID:    dependsOn.ID,
+		DependsOn:      dependsOn.Name,
+		DependencyType: req.DependencyType,
+		Criticality:    req.Criticality,
+		CreatedAt:      time.Now().UTC(),
+	}
+	err = s.db.QueryRowContext(ctx, `
+		INSERT INTO service_dependencies (
+			id, service_id, depends_on_service_id, dependency_type, criticality, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (service_id, depends_on_service_id) DO UPDATE SET
+			dependency_type = EXCLUDED.dependency_type,
+			criticality = EXCLUDED.criticality
+		RETURNING id, created_at
+	`, item.ID, item.ServiceID, item.DependsOnID, item.DependencyType, item.Criticality, item.CreatedAt).
+		Scan(&item.ID, &item.CreatedAt)
+	if err != nil {
+		return topology.Dependency{}, fmt.Errorf("upsert service dependency: %w", err)
+	}
+	return item, nil
+}
+
+func (s *Store) ListServiceDependencies(ctx context.Context) ([]topology.Dependency, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT d.id, d.service_id, service.name, d.depends_on_service_id, dependency.name,
+		       d.dependency_type, d.criticality, d.created_at
+		FROM service_dependencies d
+		JOIN services service ON service.id = d.service_id
+		JOIN services dependency ON dependency.id = d.depends_on_service_id
+		ORDER BY service.name, dependency.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list service dependencies: %w", err)
+	}
+	defer rows.Close()
+
+	var items []topology.Dependency
+	for rows.Next() {
+		var item topology.Dependency
+		if err := rows.Scan(
+			&item.ID, &item.ServiceID, &item.Service, &item.DependsOnID, &item.DependsOn,
+			&item.DependencyType, &item.Criticality, &item.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan service dependency: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) CreateManualIncident(ctx context.Context, req ManualIncidentRequest) (Incident, error) {
@@ -114,6 +207,63 @@ func (s *Store) FindOpenByDedupeKey(ctx context.Context, dedupeKey string, windo
 		return nil, fmt.Errorf("find incident by dedupe key: %w", err)
 	}
 	return &incident, nil
+}
+
+func (s *Store) ListOpenIncidents(ctx context.Context, window time.Duration) ([]Incident, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
+		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
+		       i.created_at, i.updated_at
+		FROM incidents i
+		LEFT JOIN services s ON s.id = i.service_id
+		WHERE i.status NOT IN ('resolved', 'cancelled')
+		  AND i.started_at >= now() - $1::interval
+		ORDER BY i.started_at ASC, i.id ASC
+	`, intervalLiteral(window))
+	if err != nil {
+		return nil, fmt.Errorf("list open incidents: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Incident
+	for rows.Next() {
+		var item Incident
+		if err := rows.Scan(
+			&item.ID, &item.Title, &item.ServiceID, &item.Service, &item.Severity, &item.Status,
+			&item.DedupeKey, &item.Fingerprint, &item.StartedAt, &item.DetectedAt, &item.ResolvedAt,
+			&item.Summary, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan open incident: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) PromoteIncidentRoot(
+	ctx context.Context,
+	incidentID, rootService, title, severity, dedupeKey, fingerprint, summary string,
+	startedAt time.Time,
+) (Incident, error) {
+	service, err := s.EnsureService(ctx, rootService)
+	if err != nil {
+		return Incident{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE incidents
+		SET service_id = $2,
+		    title = $3,
+		    severity = $4,
+		    dedupe_key = $5,
+		    fingerprint = $6,
+		    summary = $7,
+		    started_at = LEAST(started_at, $8),
+		    updated_at = now()
+		WHERE id = $1
+	`, incidentID, service.ID, title, defaultSeverity(severity), dedupeKey, fingerprint, summary, startedAt); err != nil {
+		return Incident{}, fmt.Errorf("promote incident root: %w", err)
+	}
+	return s.GetIncident(ctx, incidentID)
 }
 
 func (s *Store) CreateAlertIncident(ctx context.Context, title, serviceName, severity, dedupeKey, fingerprint, summary string, startedAt time.Time) (Incident, error) {
@@ -305,6 +455,77 @@ func (s *Store) ListTimeline(ctx context.Context, incidentID string) ([]Timeline
 	return items, rows.Err()
 }
 
+func (s *Store) GetIncidentTopology(ctx context.Context, incidentID string) (IncidentTopology, error) {
+	incident, err := s.GetIncident(ctx, incidentID)
+	if err != nil {
+		return IncidentTopology{}, err
+	}
+	result := IncidentTopology{
+		IncidentID:       incidentID,
+		RootService:      incident.Service,
+		AffectedServices: []string{incident.Service},
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(service.name, '')
+		FROM signals signal
+		LEFT JOIN services service ON service.id = signal.service_id
+		WHERE signal.incident_id = $1
+		  AND signal.signal_type = 'alert'
+		ORDER BY signal.observed_at, signal.id
+	`, incidentID)
+	if err != nil {
+		return IncidentTopology{}, fmt.Errorf("read topology signals: %w", err)
+	}
+	defer rows.Close()
+
+	affected := map[string]struct{}{incident.Service: {}}
+	rootObserved := false
+	for rows.Next() {
+		var service string
+		if err := rows.Scan(&service); err != nil {
+			return IncidentTopology{}, fmt.Errorf("scan topology signal: %w", err)
+		}
+		result.AlertCount++
+		if service != "" {
+			affected[service] = struct{}{}
+		}
+		if service == incident.Service {
+			rootObserved = true
+		} else {
+			result.SuppressedAlertCount++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return IncidentTopology{}, fmt.Errorf("iterate topology signals: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return IncidentTopology{}, fmt.Errorf("close topology signals: %w", err)
+	}
+	result.RootInferred = result.AlertCount > 0 && !rootObserved
+
+	result.AffectedServices = make([]string, 0, len(affected))
+	for service := range affected {
+		if service != "" {
+			result.AffectedServices = append(result.AffectedServices, service)
+		}
+	}
+	sort.Strings(result.AffectedServices)
+	dependencies, err := s.ListServiceDependencies(ctx)
+	if err != nil {
+		return IncidentTopology{}, err
+	}
+	graph := topology.New(dependencies)
+	for _, service := range result.AffectedServices {
+		if service == result.RootService {
+			continue
+		}
+		if path, ok := graph.Path(service, result.RootService); ok {
+			result.Paths = append(result.Paths, path)
+		}
+	}
+	return result, nil
+}
+
 func (s *Store) SaveRCAReport(ctx context.Context, report RCAReport) error {
 	if report.ID == "" {
 		report.ID = common.NewID("rca")
@@ -314,13 +535,14 @@ func (s *Store) SaveRCAReport(ctx context.Context, report RCAReport) error {
 	}
 	factorsJSON, _ := json.Marshal(report.ContributingFactors)
 	evidenceJSON, _ := json.Marshal(report.Evidence)
+	topologyJSON, _ := json.Marshal(report.Topology)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO rca_reports (
 			id, incident_id, deterministic_summary, llm_summary, primary_hypothesis,
-			contributing_factors, evidence, confidence, model_backend, model_name, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			contributing_factors, evidence, confidence, model_backend, model_name, topology_analysis, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 	`, report.ID, report.IncidentID, report.DeterministicSummary, report.LLMSummary, report.PrimaryHypothesis,
-		factorsJSON, evidenceJSON, report.Confidence, report.ModelBackend, report.ModelName, report.CreatedAt)
+		factorsJSON, evidenceJSON, report.Confidence, report.ModelBackend, report.ModelName, topologyJSON, report.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("save rca report: %w", err)
 	}
@@ -330,7 +552,8 @@ func (s *Store) SaveRCAReport(ctx context.Context, report RCAReport) error {
 func (s *Store) GetLatestRCAReport(ctx context.Context, incidentID string) (RCAReport, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, incident_id, deterministic_summary, COALESCE(llm_summary, ''), COALESCE(primary_hypothesis, ''),
-		       contributing_factors, evidence, COALESCE(confidence, 0), COALESCE(model_backend, ''), COALESCE(model_name, ''), created_at
+		       contributing_factors, evidence, COALESCE(confidence, 0), COALESCE(model_backend, ''), COALESCE(model_name, ''),
+		       topology_analysis, created_at
 		FROM rca_reports
 		WHERE incident_id = $1
 		ORDER BY created_at DESC
@@ -338,16 +561,17 @@ func (s *Store) GetLatestRCAReport(ctx context.Context, incidentID string) (RCAR
 	`, incidentID)
 
 	var report RCAReport
-	var factorsJSON, evidenceJSON []byte
+	var factorsJSON, evidenceJSON, topologyJSON []byte
 	if err := row.Scan(
 		&report.ID, &report.IncidentID, &report.DeterministicSummary, &report.LLMSummary, &report.PrimaryHypothesis,
-		&factorsJSON, &evidenceJSON, &report.Confidence, &report.ModelBackend, &report.ModelName, &report.CreatedAt,
+		&factorsJSON, &evidenceJSON, &report.Confidence, &report.ModelBackend, &report.ModelName, &topologyJSON, &report.CreatedAt,
 	); err != nil {
 		return RCAReport{}, fmt.Errorf("get rca report: %w", err)
 	}
 
 	_ = json.Unmarshal(factorsJSON, &report.ContributingFactors)
 	_ = json.Unmarshal(evidenceJSON, &report.Evidence)
+	_ = json.Unmarshal(topologyJSON, &report.Topology)
 	return report, nil
 }
 
