@@ -165,3 +165,14 @@ groups:
         annotations:
           summary: "Argus local OIDC provider is unavailable"
           runbook: "oidc-authentication"
+
+      - alert: ArgusAuditChainIntegrityViolation
+        expr: argus_audit_chain_integrity == 0
+        for: 1m
+        labels:
+          severity: sev1
+          service: argus
+          environment: local
+        annotations:
+          summary: "Argus detected a tamper-evident audit chain integrity violation"
+          runbook: "audit-integrity"

@@ -94,6 +94,7 @@ func TestApprovalDecisionIsAtomicWithRemediationAndAudit(t *testing.T) {
 	if _, err := store.Decide(ctx, approvalID, "other@local", "user", approvals.DecisionDeny, "changed mind", "api", now.Add(2*time.Second)); !errors.Is(err, approvals.ErrAlreadyDecided) {
 		t.Fatalf("replayed decision error = %v, want ErrAlreadyDecided", err)
 	}
+	assertAuditChainValid(t, database)
 }
 
 func TestApprovalExpiryTimesOutRemediationAndWritesAudit(t *testing.T) {
@@ -155,6 +156,7 @@ func TestApprovalExpiryTimesOutRemediationAndWritesAudit(t *testing.T) {
 	if auditCount != 2 {
 		t.Fatalf("timeout audit count = %d, want 2", auditCount)
 	}
+	assertAuditChainValid(t, database)
 }
 
 func TestSignedSlackModalRecordsMappedIdentityAndReason(t *testing.T) {
@@ -233,6 +235,7 @@ func TestSignedSlackModalRecordsMappedIdentityAndReason(t *testing.T) {
 		stored.DecisionReason != "Reviewed error-rate recovery and rollback plan" {
 		t.Fatalf("stored Slack decision = %+v", stored)
 	}
+	assertAuditChainValid(t, database)
 }
 
 func TestRepeatedExecutionReusesDurableRemediationWithoutRequeue(t *testing.T) {
@@ -306,6 +309,7 @@ func TestRepeatedExecutionReusesDurableRemediationWithoutRequeue(t *testing.T) {
 	if queued != 1 || reusedAudit != 1 {
 		t.Fatalf("execution audit records queued=%d reused=%d, want 1 each", queued, reusedAudit)
 	}
+	assertAuditChainValid(t, database)
 }
 
 type countingExecutor struct {
@@ -360,9 +364,19 @@ func insertFixture(t *testing.T, database *sql.DB, serviceID, incidentID, remedi
 
 func cleanupFixture(database *sql.DB, approvalID, remediationID, incidentID, serviceID string) {
 	ctx := context.Background()
-	_, _ = database.ExecContext(ctx, `DELETE FROM audit_logs WHERE resource_id IN ($1, $2)`, approvalID, remediationID)
 	_, _ = database.ExecContext(ctx, `DELETE FROM approval_requests WHERE id = $1`, approvalID)
 	_, _ = database.ExecContext(ctx, `DELETE FROM remediation_actions WHERE id = $1`, remediationID)
 	_, _ = database.ExecContext(ctx, `DELETE FROM incidents WHERE id = $1`, incidentID)
 	_, _ = database.ExecContext(ctx, `DELETE FROM services WHERE id = $1`, serviceID)
+}
+
+func assertAuditChainValid(t *testing.T, database *sql.DB) {
+	t.Helper()
+	report, err := audit.NewService(database).Verify(context.Background())
+	if err != nil {
+		t.Fatalf("verify audit chain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("approval workflow left an invalid audit chain: %+v", report)
+	}
 }

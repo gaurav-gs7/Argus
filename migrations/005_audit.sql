@@ -10,5 +10,9 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     before_state JSONB,
     after_state JSONB,
     metadata JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    chain_position BIGINT,
+    previous_hash CHAR(64),
+    entry_hash CHAR(64),
+    hash_version SMALLINT
 );

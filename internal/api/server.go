@@ -41,6 +41,7 @@ type Server struct {
 	authenticator      auth.Authenticator
 	approvalService    *approvals.Service
 	approvalCancel     context.CancelFunc
+	auditVerifyCancel  context.CancelFunc
 	slackApproval      *approvals.SlackWorkflow
 }
 
@@ -127,7 +128,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	}
 	remediationService := remediation.NewService(store, auditor, policy.NewEngine(), queueClient, executor, metrics, approvalService)
 
-	return &Server{
+	server := &Server{
 		cfg:                cfg,
 		logger:             logger,
 		db:                 database,
@@ -142,12 +143,20 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		approvalService:    approvalService,
 		approvalCancel:     approvalCancel,
 		slackApproval:      slackApproval,
-	}, nil
+	}
+	auditVerifyContext, auditVerifyCancel := context.WithCancel(context.Background())
+	server.auditVerifyCancel = auditVerifyCancel
+	server.verifyAuditChain(auditVerifyContext)
+	go server.auditVerificationLoop(auditVerifyContext, time.Minute)
+	return server, nil
 }
 
 func (s *Server) Close() error {
 	if s.approvalCancel != nil {
 		s.approvalCancel()
+	}
+	if s.auditVerifyCancel != nil {
+		s.auditVerifyCancel()
 	}
 	if s.queue != nil {
 		s.queue.Close()
@@ -175,6 +184,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/approval-requests/", s.handleApprovalRequests)
 	mux.HandleFunc("/v1/approval-callbacks/slack", s.handleSlackApprovalCallback)
 	mux.HandleFunc("/v1/audit", s.handleAudit)
+	mux.HandleFunc("/v1/audit/verify", s.handleAuditVerify)
 	mux.HandleFunc("/v1/services", s.handleServices)
 	mux.HandleFunc("/v1/runbooks", s.handleRunbooks)
 	mux.HandleFunc("/v1/runbooks/reindex", s.handleRunbookReindex)
@@ -597,12 +607,33 @@ func (s *Server) handleSlackApprovalCallback(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	items, err := s.auditor.List(r.Context(), 100)
 	if err != nil {
 		common.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	report, err := s.verifyAuditChain(r.Context())
+	if err != nil {
+		common.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status := http.StatusOK
+	if !report.Valid {
+		status = http.StatusConflict
+	}
+	common.WriteJSON(w, status, report)
 }
 
 func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
@@ -752,7 +783,7 @@ func requiredPermission(r *http.Request) auth.Permission {
 		if len(parts) == 2 && parts[1] == "decision" && method == http.MethodPost {
 			return auth.PermissionApproveRemediation
 		}
-	case path == "/v1/audit":
+	case path == "/v1/audit" || path == "/v1/audit/verify":
 		return auth.PermissionViewAudit
 	case path == "/v1/services" && method == http.MethodGet:
 		return auth.PermissionView
@@ -779,6 +810,48 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 		logger.Info("request completed", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(start).Milliseconds())
 	})
+}
+
+func (s *Server) auditVerificationLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.verifyAuditChain(ctx)
+		}
+	}
+}
+
+func (s *Server) verifyAuditChain(ctx context.Context) (audit.Verification, error) {
+	report, err := s.auditor.Verify(ctx)
+	if err != nil {
+		if s.metrics != nil {
+			s.metrics.AuditChainIntegrity.Set(0)
+			s.metrics.AuditVerificationsTotal.WithLabelValues("error").Inc()
+		}
+		s.logger.Error("audit chain verification failed", "error", err)
+		return audit.Verification{}, err
+	}
+	result := "valid"
+	integrity := float64(1)
+	if !report.Valid {
+		result = "invalid"
+		integrity = 0
+		s.logger.Error(
+			"audit chain integrity violation",
+			"position", report.InvalidPosition,
+			"reason", report.Reason,
+		)
+	}
+	if s.metrics != nil {
+		s.metrics.AuditChainIntegrity.Set(integrity)
+		s.metrics.AuditChainHeadPosition.Set(float64(report.HeadPosition))
+		s.metrics.AuditVerificationsTotal.WithLabelValues(result).Inc()
+	}
+	return report, nil
 }
 
 type ctxKeyRequestID struct{}

@@ -8,7 +8,7 @@ It is designed to feel like an internal reliability platform rather than a gener
 - RCA is built from deterministic evidence first
 - the LLM is advisory only and never in the correctness path
 - Verdikt governs every AI remediation proposal in policy-only mode
-- remediations are typed, idempotent, policy-gated, and auditable
+- remediations are typed, idempotent, policy-gated, and recorded in a tamper-evident audit ledger
 - medium-risk actions enter a durable, identity-bound human approval workflow
 
 ## Why This Stack
@@ -51,7 +51,7 @@ Observability signals -> Argus API -> Deterministic RCA -> AI advisory
                                  PostgreSQL       Go Policy     Typed suggestions
                                       |                 |             |
                                       v                 v             |
-                                  Audit Log      Durable approval <---+
+                              Audit Hash Chain   Durable approval <---+
                                                         |
                                              Slack / signed webhook
                                                         |
@@ -147,9 +147,22 @@ A captured end-to-end governance run is committed at [docs/demo-evidence/ai-gove
 - the proposer cannot approve their own action by default
 - unanswered requests escalate and then expire the remediation
 - high-risk actions are blocked
-- every state-changing operation writes audit logs
+- every state-changing operation appends to a verifiable SHA-256 audit hash chain
 - duplicate alerts are deduplicated
 - duplicate remediation executions are ignored
+
+## Tamper-Evident Audit Ledger
+
+Audit records are append-only and ordered by a transactionally locked chain head. Each entry stores its chain position, prior hash, SHA-256 entry hash, and hash version. The hash covers canonical JSON for the actor, action, resource, request context, before/after state, metadata, timestamp, and chain metadata. Approval decisions append their audit records inside the same PostgreSQL transaction as the approval and remediation transitions.
+
+PostgreSQL triggers reject `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_logs`. Argus verifies the complete chain at startup, every minute, and on demand:
+
+```bash
+export ARGUS_API_TOKEN="$(./scripts/oidc-token.sh admin)"
+argus audit verify
+```
+
+Prometheus exposes `argus_audit_chain_integrity`, `argus_audit_chain_head_position`, and verification counters. The persisted chain head detects missing tail entries as well as modified or reordered rows. For a threat model that includes a compromised PostgreSQL owner rewriting both the ledger and its head, export and sign the head hash in an external immutable store; that external anchoring is intentionally outside the local v1 profile.
 
 ## Human Approval
 
@@ -179,7 +192,7 @@ This repository includes:
 - Docker Compose profiles
 - docs, ADRs, migrations, scripts, committed demo evidence, dashboards, alerts, and CI checks
 
-See [docs/architecture.md](docs/architecture.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
+See [docs/architecture.md](docs/architecture.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
 
 ## License
 

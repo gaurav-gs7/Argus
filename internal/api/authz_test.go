@@ -45,6 +45,7 @@ func TestRequiredPermissionForProtectedRoutes(t *testing.T) {
 		{http.MethodGet, "/v1/approval-requests/apr_1", auth.PermissionView},
 		{http.MethodPost, "/v1/approval-requests/apr_1/decision", auth.PermissionApproveRemediation},
 		{http.MethodGet, "/v1/audit", auth.PermissionViewAudit},
+		{http.MethodGet, "/v1/audit/verify", auth.PermissionViewAudit},
 		{http.MethodGet, "/v1/services", auth.PermissionView},
 		{http.MethodPost, "/v1/services", auth.PermissionManageService},
 		{http.MethodGet, "/v1/runbooks", auth.PermissionView},

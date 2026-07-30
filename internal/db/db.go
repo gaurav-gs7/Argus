@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gauravgs7/argus/internal/audit"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -170,7 +171,11 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			before_state JSONB,
 			after_state JSONB,
 			metadata JSONB,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			chain_position BIGINT,
+			previous_hash CHAR(64),
+			entry_hash CHAR(64),
+			hash_version SMALLINT
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_logs(resource_type, resource_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at DESC);`,
@@ -189,6 +194,10 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate statement failed: %w", err)
 		}
+	}
+
+	if err := audit.MigrateLedger(ctx, db); err != nil {
+		return fmt.Errorf("migrate tamper-evident audit ledger: %w", err)
 	}
 
 	return nil

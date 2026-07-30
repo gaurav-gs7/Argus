@@ -30,7 +30,7 @@ func TestAlertIngestionPersistsAndGroupsIncident(t *testing.T) {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	if _, err := database.ExecContext(ctx, `
-		TRUNCATE audit_logs, incident_timeline_events, signals, incidents, services CASCADE
+		TRUNCATE incident_timeline_events, signals, incidents, services CASCADE
 	`); err != nil {
 		t.Fatalf("reset test database: %v", err)
 	}
@@ -112,7 +112,14 @@ func TestAlertIngestionPersistsAndGroupsIncident(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list audit entries: %v", err)
 	}
-	if len(auditEntries) != 1 || auditEntries[0].Action != "incident.detected" {
-		t.Fatalf("expected one incident.detected audit entry, got %#v", auditEntries)
+	foundAudit := false
+	for _, entry := range auditEntries {
+		if entry.Action == "incident.detected" && entry.ResourceID == first[0].ID {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("expected incident.detected audit entry for %s, got %#v", first[0].ID, auditEntries)
 	}
 }

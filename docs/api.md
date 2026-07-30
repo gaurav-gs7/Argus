@@ -26,6 +26,7 @@ Core endpoints:
 - `POST /v1/approval-requests/{approval_request_id}/decision`
 - `POST /v1/approval-callbacks/slack` (public transport endpoint; Slack HMAC verification is mandatory)
 - `GET /v1/audit`
+- `GET /v1/audit/verify` (admin-only full hash-chain verification)
 - `GET /v1/services`
 - `POST /v1/services`
 - `GET /v1/runbooks`
@@ -43,5 +44,7 @@ Approval decision body:
 The actor is derived from the verified OIDC token's issuer and subject. Signature, issuer, audience, expiry, signing algorithm, and role mapping are validated before authorization. `reason` is required, a proposer cannot decide their own request by default, and replayed or expired decisions fail closed.
 
 Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
+
+Audit list responses include `chain_position`, `previous_hash`, `entry_hash`, and `hash_version`. Verification returns `200` with `valid: true` when every entry and the persisted chain head agree. It returns `409` with the first invalid position and a bounded reason when tampering, deletion, reordering, or a head mismatch is detected.
 
 The Slack endpoint accepts Slack's form-encoded interactivity payload. A signed button callback opens a reason modal; only the signed modal submission decides the request. Slack user IDs must map to Argus identities using `ARGUS_SLACK_APPROVERS`.

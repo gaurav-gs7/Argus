@@ -127,6 +127,8 @@ curl -sS -H "Authorization: Bearer ${PROPOSER_TOKEN}" "${API_URL}/v1/incidents/$
 curl -sS -H "Authorization: Bearer ${PROPOSER_TOKEN}" "${API_URL}/v1/incidents/${INCIDENT_ID}/remediations" >"${EVIDENCE_DIR}/remediations.json"
 curl -sS -H "Authorization: Bearer ${PROPOSER_TOKEN}" "${API_URL}/v1/approval-requests" >"${EVIDENCE_DIR}/approval-requests-after.json"
 curl -sS -H "Authorization: Bearer ${APPROVER_TOKEN}" "${API_URL}/v1/audit" >"${EVIDENCE_DIR}/audit.json"
+curl -sS --fail -H "Authorization: Bearer ${APPROVER_TOKEN}" \
+  "${API_URL}/v1/audit/verify" >"${EVIDENCE_DIR}/audit-verification.json"
 curl -sS "${API_URL}/metrics" >"${EVIDENCE_DIR}/argus-metrics.prom"
 curl -sS "${PAYMENTS_URL}/metrics" >"${EVIDENCE_DIR}/payments-metrics.prom"
 
@@ -144,6 +146,7 @@ cat >"${EVIDENCE_DIR}/summary.md" <<EOF
 - Incident resolution: ${EVIDENCE_DIR}/incident-resolve.json
 - Timeline: ${EVIDENCE_DIR}/timeline.json
 - Audit: ${EVIDENCE_DIR}/audit.json
+- Audit chain verification: ${EVIDENCE_DIR}/audit-verification.json
 - Metrics: ${EVIDENCE_DIR}/argus-metrics.prom
 EOF
 

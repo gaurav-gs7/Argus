@@ -3,14 +3,12 @@ package approvals
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/audit"
-	"github.com/gauravgs7/argus/internal/common"
 )
 
 var (
@@ -484,24 +482,7 @@ func scanRequest(row scanner) (Request, error) {
 }
 
 func writeAuditTx(ctx context.Context, tx *sql.Tx, entry audit.Entry) error {
-	if entry.ID == "" {
-		entry.ID = common.NewID("aud")
-	}
-	if entry.CreatedAt.IsZero() {
-		entry.CreatedAt = time.Now().UTC()
-	}
-	beforeJSON, _ := json.Marshal(entry.BeforeState)
-	afterJSON, _ := json.Marshal(entry.AfterState)
-	metadataJSON, _ := json.Marshal(entry.Metadata)
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO audit_logs (
-			id, actor_id, actor_type, action, resource_type, resource_id,
-			request_id, ip_address, before_state, after_state, metadata, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-	`, entry.ID, entry.ActorID, entry.ActorType, entry.Action, entry.ResourceType,
-		entry.ResourceID, entry.RequestID, entry.IPAddress, beforeJSON, afterJSON,
-		metadataJSON, entry.CreatedAt)
-	if err != nil {
+	if err := audit.WriteTx(ctx, tx, entry); err != nil {
 		return fmt.Errorf("write approval audit log: %w", err)
 	}
 	return nil

@@ -28,11 +28,33 @@ func main() {
 		remediationCmd(&baseURL, &token),
 		scenarioCmd(&baseURL, &token),
 		runbookCmd(&baseURL, &token),
+		auditCmd(&baseURL, &token),
 	)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func auditCmd(baseURL, token *string) *cobra.Command {
+	cmd := &cobra.Command{Use: "audit"}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "list",
+			Short: "List append-only audit ledger entries",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return printRequest(http.MethodGet, *baseURL+"/v1/audit", nil, *token)
+			},
+		},
+		&cobra.Command{
+			Use:   "verify",
+			Short: "Verify the complete tamper-evident audit hash chain",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return printRequest(http.MethodGet, *baseURL+"/v1/audit/verify", nil, *token)
+			},
+		},
+	)
+	return cmd
 }
 
 func incidentCmd(baseURL, token *string) *cobra.Command {

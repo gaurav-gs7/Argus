@@ -100,6 +100,16 @@ admin_action="$(
     --header "Authorization: Bearer ${admin}" \
     "${API_URL}/v1/audit"
 )"
+operator_audit_verify="$(
+  curl --silent --output "${TMP_DIR}/operator-audit-verify.json" --write-out '%{http_code}' \
+    --header "Authorization: Bearer ${operator}" \
+    "${API_URL}/v1/audit/verify"
+)"
+admin_audit_verify="$(
+  curl --silent --output "${TMP_DIR}/admin-audit-verify.json" --write-out '%{http_code}' \
+    --header "Authorization: Bearer ${admin}" \
+    "${API_URL}/v1/audit/verify"
+)"
 
 IFS='.' read -r token_header token_payload token_signature <<<"${viewer}"
 replacement="A"
@@ -118,12 +128,29 @@ assert_code "viewer read" 200 "${viewer_read}"
 assert_code "viewer mutation" 403 "${viewer_write}"
 assert_code "operator action" 202 "${operator_action}"
 assert_code "admin action" 200 "${admin_action}"
+assert_code "operator audit verification" 403 "${operator_audit_verify}"
+assert_code "admin audit verification" 200 "${admin_audit_verify}"
 assert_code "tampered signature" 401 "${tampered_code}"
+
+AUDIT_VERIFICATION="${TMP_DIR}/admin-audit-verify.json" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ["AUDIT_VERIFICATION"], encoding="utf-8") as handle:
+    verification = json.load(handle)
+assert verification["valid"] is True
+assert verification["entries_verified"] == verification["head_position"]
+assert len(verification["head_hash"]) == 64
+PY
 
 metrics="$(curl --fail --silent "${API_URL}/metrics")"
 grep -q 'argus_authentication_failures_total{reason="invalid_token"}' <<<"${metrics}"
 grep -q 'argus_authentication_failures_total{reason="missing_bearer_token"}' <<<"${metrics}"
 grep -q 'argus_authorization_denials_total{permission="manage_service",role="viewer"}' <<<"${metrics}"
+grep -q 'argus_authorization_denials_total{permission="view_audit",role="operator"}' <<<"${metrics}"
+grep -q 'argus_audit_verifications_total{result="valid"}' <<<"${metrics}"
+grep -q '^argus_audit_chain_integrity 1$' <<<"${metrics}"
 
-printf 'OIDC E2E passed: unauth=%s viewer_read=%s viewer_write=%s operator=%s admin=%s tampered=%s\n' \
-  "${unauth}" "${viewer_read}" "${viewer_write}" "${operator_action}" "${admin_action}" "${tampered_code}"
+printf 'OIDC E2E passed: unauth=%s viewer_read=%s viewer_write=%s operator=%s admin=%s audit_verify=%s tampered=%s\n' \
+  "${unauth}" "${viewer_read}" "${viewer_write}" "${operator_action}" "${admin_action}" \
+  "${admin_audit_verify}" "${tampered_code}"

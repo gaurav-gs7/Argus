@@ -14,7 +14,7 @@
     "to": "now"
   },
   "title": "Argus Control Plane Overview",
-  "version": 4,
+  "version": 5,
   "templating": {
     "list": []
   },
@@ -636,6 +636,85 @@
       ],
       "title": "OIDC Rejection Rate",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "INVALID"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "VERIFIED"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 49
+      },
+      "id": 25,
+      "targets": [
+        {
+          "expr": "argus_audit_chain_integrity",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit Chain Integrity",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 49
+      },
+      "id": 26,
+      "targets": [
+        {
+          "expr": "argus_audit_chain_head_position",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit Ledger Head",
+      "type": "stat"
     }
   ]
 }

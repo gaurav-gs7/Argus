@@ -22,6 +22,9 @@ type Metrics struct {
 	ApprovalNotificationFailuresTotal *prometheus.CounterVec
 	AuthenticationFailuresTotal       *prometheus.CounterVec
 	AuthorizationDenialsTotal         *prometheus.CounterVec
+	AuditVerificationsTotal           *prometheus.CounterVec
+	AuditChainIntegrity               prometheus.Gauge
+	AuditChainHeadPosition            prometheus.Gauge
 }
 
 func MustRegister() *Metrics {
@@ -107,6 +110,18 @@ func MustRegister() *Metrics {
 			Name: "argus_authorization_denials_total",
 			Help: "Authenticated API requests denied by role and permission",
 		}, []string{"role", "permission"}),
+		AuditVerificationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_audit_verifications_total",
+			Help: "Tamper-evident audit chain verification attempts by result",
+		}, []string{"result"}),
+		AuditChainIntegrity: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "argus_audit_chain_integrity",
+			Help: "Whether the latest audit chain verification passed (1) or failed (0)",
+		}),
+		AuditChainHeadPosition: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "argus_audit_chain_head_position",
+			Help: "Persisted position of the latest audit ledger entry",
+		}),
 	}
 
 	prometheus.MustRegister(
@@ -129,6 +144,9 @@ func MustRegister() *Metrics {
 		m.ApprovalNotificationFailuresTotal,
 		m.AuthenticationFailuresTotal,
 		m.AuthorizationDenialsTotal,
+		m.AuditVerificationsTotal,
+		m.AuditChainIntegrity,
+		m.AuditChainHeadPosition,
 	)
 
 	return m
