@@ -78,6 +78,13 @@ if [[ -n "${REMEDIATION_ID}" ]]; then
     -H "Authorization: Bearer ${PROPOSER_TOKEN}" \
     -d '{"reason":"Self approval must fail closed"}')"
   printf '{"http_status":%s}\n' "${SELF_APPROVAL_CODE}" >"${EVIDENCE_DIR}/self-approval-status.json"
+  case "${SELF_APPROVAL_CODE}" in
+    400 | 403) ;;
+    *)
+      echo "Self approval did not fail closed (HTTP ${SELF_APPROVAL_CODE})."
+      exit 1
+      ;;
+  esac
 
   curl -sS -X POST "${API_URL}/v1/remediations/${REMEDIATION_ID}/approve" \
     -H 'Content-Type: application/json' \
