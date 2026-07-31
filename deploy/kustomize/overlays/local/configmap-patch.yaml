@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-control-plane
+data:
+  ARGUS_ENV: local
+  ARGUS_LOG_LEVEL: DEBUG
+  ARGUS_OIDC_ISSUER_URL: http://keycloak.keycloak.svc.cluster.local:8080/realms/argus
+  ARGUS_APPROVAL_CALLBACK_BASE_URL: http://argus-api:8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-ai
+data:
+  ARGUS_LLM_BACKEND: mock

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-control-plane
+data:
+  ARGUS_ENV: production
+  ARGUS_OIDC_ISSUER_URL: https://identity.example.com/realms/argus
+  ARGUS_OIDC_AUDIENCE: argus-api
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-ai
+data:
+  ARGUS_LLM_BACKEND: gemini
+

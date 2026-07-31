@@ -1,0 +1,41 @@
+global:
+  environment: production
+
+controlPlane:
+  oidc:
+    issuerURL: https://identity.example.com/realms/argus
+    audience: argus-api
+
+api:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+  autoscaling:
+    enabled: true
+
+worker:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+
+ai:
+  backend: gemini
+
+ingress:
+  enabled: true
+  hosts:
+    - host: argus.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: argus-tls
+      hosts:
+        - argus.example.com
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+

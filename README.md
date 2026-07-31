@@ -24,7 +24,8 @@ This repository is intentionally optimized for local development on a MacBook Ai
 - Redis for lightweight cache and coordination
 - OIDC/JWT authentication with a resource-capped local Keycloak realm
 - Prometheus, Alertmanager, Loki, Grafana, and OTel Collector for observability
-- Docker Compose instead of Kubernetes
+- Docker Compose as the low-resource local default
+- Helm and Kustomize packaging as an undeployed production stretch path
 
 The default local profile keeps the AI service lightweight and mock-friendly. Ollama and Gemini can be enabled explicitly.
 
@@ -122,6 +123,21 @@ Full profile:
 - failure-injector
 - optional ollama
 
+## Kubernetes Packaging
+
+Compose remains the supported development and demo path for an 8 GB Mac. Argus also includes a production-shaped Helm chart and Kustomize base/overlays so the runtime contract is not tied to one laptop:
+
+```bash
+make k8s-check
+helm upgrade --install argus deploy/helm/argus \
+  --namespace argus --create-namespace \
+  -f deploy/helm/argus/values-production.yaml
+```
+
+The manifests deploy only Argus-owned API, worker, and AI workloads. They expect PostgreSQL, Redis, NATS, OIDC, Verdikt, DNS, TLS, ingress, and secret management to be supplied by the target platform. They include non-root security contexts, read-only root filesystems, resource limits, probes, PDB/HPA options, ingress, monitoring hooks, and network policies.
+
+These manifests are rendered and linted in CI but are intentionally labeled a stretch path: they have not been certified against a live production cluster, and the example image tags, hostnames, identity provider, TLS secret, and runtime Secret must be replaced. See [docs/kubernetes.md](docs/kubernetes.md).
+
 ## OIDC Authentication And RBAC
 
 Argus accepts short-lived, asymmetrically signed OIDC JWT access tokens. It validates the signature through the provider's rotating JWKS, exact issuer, `argus-api` audience, expiry, and an RS256 allow-list before reading identity or role claims. Provider roles are explicitly mapped to `admin`, `operator`, or `viewer`; missing, unknown, or conflicting Argus roles fail closed.
@@ -208,9 +224,10 @@ This repository includes:
 - advisory AI service with `mock`, `ollama`, and `gemini` adapters
 - local observability configuration
 - Docker Compose profiles
+- CI-validated Helm and Kustomize packaging for an undeployed production stretch path
 - docs, ADRs, migrations, scripts, committed demo evidence, dashboards, alerts, and CI checks
 
-See [docs/architecture.md](docs/architecture.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
+See [docs/architecture.md](docs/architecture.md), [docs/kubernetes.md](docs/kubernetes.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
 
 ## License
 

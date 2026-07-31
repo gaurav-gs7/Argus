@@ -1,0 +1,134 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+  annotations: {}
+  name: ""
+
+runtimeSecret:
+  # Create this Secret out of band. See secret.example.yaml.
+  name: argus-runtime
+
+global:
+  environment: production
+  logLevel: info
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+controlPlane:
+  oidc:
+    issuerURL: https://identity.example.com/realms/argus
+    audience: argus-api
+    roleClaim: realm_access.roles
+    roleMappings: argus-admin=admin,argus-operator=operator,argus-viewer=viewer
+  aiServiceURL: ""
+  remediationExecutor: local
+  heliosBaseURL: ""
+  approvalCallbackBaseURL: https://argus.example.com
+  approvalTimeout: 15m
+  approvalEscalateAfter: 10m
+
+api:
+  replicas: 1
+  image:
+    repository: ghcr.io/gaurav-gs7/argus-api
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+worker:
+  replicas: 1
+  image:
+    repository: ghcr.io/gaurav-gs7/argus-worker
+    tag: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+ai:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/gaurav-gs7/argus-ai
+    tag: ""
+    pullPolicy: IfNotPresent
+  backend: mock
+  ollamaBaseURL: http://ollama.ai.svc.cluster.local:11434
+  ollamaModel: qwen2.5:1.5b
+  geminiModel: gemini-2.0-flash-lite
+  verdiktURL: http://verdikt.verdikt.svc.cluster.local:8080
+  runbookPath: /data/runbooks
+  pastIncidentsPath: /data/incidents/sample-past-incidents.json
+  service:
+    port: 8090
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 750m
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: argus.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+networkPolicy:
+  enabled: true
+  apiIngress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring

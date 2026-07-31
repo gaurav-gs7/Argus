@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: argus-api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argus
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: argus-ai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argus
+      app.kubernetes.io/component: ai
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argus
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 8090
+

@@ -1,0 +1,10 @@
+Argus has been rendered for namespace {{ .Release.Namespace }}.
+
+Before installation, create {{ .Values.runtimeSecret.name }} from a secret manager or:
+  kubectl -n {{ .Release.Namespace }} apply -f deploy/helm/argus/secret.example.yaml
+
+Verify the rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "argus.fullname" . }}-api
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "argus.fullname" . }}-worker
+
+The chart expects externally operated PostgreSQL, Redis, NATS, and OIDC services.

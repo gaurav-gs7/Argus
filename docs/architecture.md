@@ -87,3 +87,7 @@ The default profile keeps resource usage reasonable for 8 GB RAM by:
 - skipping vector DB
 - using keyword retrieval over runbooks
 - avoiding Tempo/Jaeger in the default Compose profile
+
+Docker Compose is the supported local runtime. The Helm chart and Kustomize overlays package the three Argus-owned workloads for a production-shaped cluster while treating PostgreSQL, Redis, NATS, OIDC, Verdikt, ingress, TLS, and secrets as platform dependencies. Kubernetes resources are statically rendered in CI but remain an undeployed stretch path rather than a claim of production certification.
+
+See [Kubernetes Packaging](kubernetes.md) and [ADR 0010](adr/0010-add-kubernetes-packaging.md).

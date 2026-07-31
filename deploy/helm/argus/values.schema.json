@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "runtimeSecret",
+    "controlPlane",
+    "api",
+    "worker",
+    "ai"
+  ],
+  "properties": {
+    "runtimeSecret": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "controlPlane": {
+      "type": "object",
+      "required": [
+        "oidc"
+      ],
+      "properties": {
+        "oidc": {
+          "type": "object",
+          "required": [
+            "issuerURL",
+            "audience",
+            "roleClaim",
+            "roleMappings"
+          ],
+          "properties": {
+            "issuerURL": {
+              "type": "string",
+              "minLength": 1
+            },
+            "audience": {
+              "type": "string",
+              "minLength": 1
+            },
+            "roleClaim": {
+              "type": "string",
+              "minLength": 1
+            },
+            "roleMappings": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "api": {
+      "$ref": "#/definitions/workload"
+    },
+    "worker": {
+      "$ref": "#/definitions/workload"
+    },
+    "ai": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/workload"
+        },
+        {
+          "type": "object",
+          "required": [
+            "enabled",
+            "backend"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "backend": {
+              "type": "string",
+              "enum": [
+                "mock",
+                "ollama",
+                "gemini"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "workload": {
+      "type": "object",
+      "required": [
+        "replicas",
+        "image",
+        "resources"
+      ],
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "pullPolicy"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "required": [
+            "requests",
+            "limits"
+          ]
+        }
+      }
+    }
+  }
+}

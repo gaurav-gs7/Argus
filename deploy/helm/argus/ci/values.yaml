@@ -1,0 +1,18 @@
+runtimeSecret:
+  name: argus-runtime
+
+controlPlane:
+  oidc:
+    issuerURL: https://issuer.example.test
+    audience: argus-ci
+
+ai:
+  backend: mock
+
+ingress:
+  enabled: true
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+

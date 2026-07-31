@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.32.3
       - name: Check Go formatting
         run: test -z "$(gofmt -l ./cmd ./internal ./demo/services)"
       - name: Run Go vet
@@ -35,6 +41,8 @@ jobs:
         run: |
           docker compose config >/dev/null
           docker compose -f docker-compose.yml -f docker-compose.full.yml config >/dev/null
+      - name: Validate Kubernetes packaging
+        run: make k8s-check
       - name: Validate shell and JSON artifacts
         run: |
           bash -n scripts/*.sh

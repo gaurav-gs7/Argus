@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -61,12 +61,35 @@ compose-check:
 	docker compose config >/dev/null
 	docker compose -f docker-compose.yml -f docker-compose.full.yml config >/dev/null
 
+helm-check:
+	@set -eu; \
+		run_helm() { \
+			if command -v helm >/dev/null 2>&1; then \
+				helm "$$@"; \
+			else \
+				docker run --rm -v "$$PWD:/work" -w /work alpine/helm:3.17.3 "$$@"; \
+			fi; \
+		}; \
+		run_helm lint deploy/helm/argus -f deploy/helm/argus/ci/values.yaml; \
+		run_helm template argus deploy/helm/argus \
+			--namespace argus \
+			-f deploy/helm/argus/ci/values.yaml >/dev/null; \
+		run_helm template argus deploy/helm/argus \
+			--namespace argus \
+			-f deploy/helm/argus/values-production.yaml >/dev/null
+
+kustomize-check:
+	kubectl kustomize deploy/kustomize/overlays/local >/dev/null
+	kubectl kustomize deploy/kustomize/overlays/production >/dev/null
+
+k8s-check: helm-check kustomize-check
+
 docs-check:
 	python3 scripts/check-portable-docs.py
 
 lint: fmt-check vet docs-check
 
-ci: lint test ai-test py-compile compose-check
+ci: lint test ai-test py-compile compose-check k8s-check
 
 reset:
 	./scripts/reset-local.sh

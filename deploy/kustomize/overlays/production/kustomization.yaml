@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argus
+resources:
+  - ../../base
+  - namespace.yaml
+  - ingress.yaml
+  - hpa.yaml
+images:
+  - name: ghcr.io/gaurav-gs7/argus-api
+    newTag: 0.1.0
+  - name: ghcr.io/gaurav-gs7/argus-worker
+    newTag: 0.1.0
+  - name: ghcr.io/gaurav-gs7/argus-ai
+    newTag: 0.1.0
+replicas:
+  - name: argus-api
+    count: 2
+  - name: argus-worker
+    count: 2
+patches:
+  - path: configmap-patch.yaml
+  - path: pdb-patch.yaml
+  - path: networkpolicy-patch.yaml
+
