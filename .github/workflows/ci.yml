@@ -60,6 +60,9 @@ jobs:
           docker run --rm --entrypoint /bin/amtool \
             -v "$PWD/configs/alertmanager:/etc/alertmanager:ro" \
             prom/alertmanager:v0.27.0 check-config /etc/alertmanager/alertmanager.yml
+          docker run --rm \
+            -v "$PWD/configs/opa:/policies:ro" \
+            openpolicyagent/opa:1.4.2 check /policies/remediation.rego
       - name: Build production images
         run: |
           docker build -f Dockerfile.api -t argus-api:ci .

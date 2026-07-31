@@ -19,6 +19,10 @@ ActionType = Literal[
     "clear_redis_keyspace",
     "drain_postgres_connections",
     "revert_feature_flag",
+    "restart_pod",
+    "resize_connection_pool",
+    "toggle_feature_flag",
+    "purge_cache",
 ]
 
 
@@ -27,6 +31,7 @@ class DeterministicCandidate(BaseModel):
 
     action_type: ActionType
     target: str = Field(min_length=1, max_length=160)
+    parameters: dict[str, Any] = Field(default_factory=dict)
     risk: Literal["low", "medium"]
     requires_approval: bool
 
@@ -109,6 +114,7 @@ class RemediationAdvisor:
                     "environment": str(incident.get("environment", "local")),
                     "action_type": candidate.action_type,
                     "target": candidate.target,
+                    "parameters": candidate.parameters,
                     "risk": candidate.risk,
                     "dry_run": True,
                     "advisory_only": True,
@@ -119,6 +125,7 @@ class RemediationAdvisor:
             item = {
                 "action_type": candidate.action_type,
                 "target": candidate.target,
+                "parameters": candidate.parameters,
                 "risk": candidate.risk,
                 "requires_approval": candidate.requires_approval,
                 "rationale": trim_text(proposal.rationale, 800),

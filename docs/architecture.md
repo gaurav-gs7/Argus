@@ -33,8 +33,9 @@ The correctness path does not depend on an LLM:
 8. Generate rule-based RCA hypotheses
 9. Propose typed remediations
 10. Apply policy checks and require approval for medium-risk operations
-11. Execute through registered handlers only
-12. Append every state change to the serialized SHA-256 audit hash chain
+11. Validate typed target and parameter bounds again in the worker
+12. Execute through registered handlers using a durable idempotency receipt
+13. Append every state change to the serialized SHA-256 audit hash chain
 
 ## Topology Correlation
 
@@ -48,6 +49,12 @@ The correctness path does not depend on an LLM:
 This converts an alert storm into root incident groups without discarding evidence. A downstream alert is stored in `signals`, emitted as a `downstream_alert_suppressed` timeline event, and appended to the audit chain. Root inference never receives the confidence increase reserved for an observed root. Independent dependency failures remain separate incidents.
 
 The ingestion lock is PostgreSQL-backed rather than process-local, so concurrent API replicas cannot race to create competing root incidents. It is deliberately coarse for the low-volume local profile; partitioned advisory locks are the natural scale-out path.
+
+## Typed Remediation Runtime
+
+`remediation_actions.parameters` carries deterministic desired state. The local worker exposes four concrete bounded handlers for pod restart, connection-pool resize, feature-flag toggle, and cache purge. Each handler implements validation, dry-run, and execute separately.
+
+The M2-friendly adapter stores desired resource state in `remediation_target_states`. `remediation_execution_receipts` is keyed by the action's parameter-aware idempotency key. An execution transaction locks both the receipt and target, merges the desired state, and commits the result and receipt atomically. Replays return the receipt. This proves worker safety without adding Kubernetes to the default profile.
 
 ## Advisory AI Path
 

@@ -1,6 +1,8 @@
 package policy
 
-import "strings"
+import (
+	"github.com/gauravgs7/argus/internal/actions"
+)
 
 type Input struct {
 	Actor struct {
@@ -14,10 +16,11 @@ type Input struct {
 		Environment string `json:"environment"`
 	} `json:"incident"`
 	Remediation struct {
-		Type   string `json:"type"`
-		Target string `json:"target"`
-		Risk   string `json:"risk"`
-		DryRun bool   `json:"dry_run"`
+		Type       string         `json:"type"`
+		Target     string         `json:"target"`
+		Risk       string         `json:"risk"`
+		DryRun     bool           `json:"dry_run"`
+		Parameters map[string]any `json:"parameters"`
 	} `json:"remediation"`
 	History struct {
 		SameActionLast10m int `json:"same_action_last_10m"`
@@ -32,26 +35,10 @@ type Decision struct {
 	MaxAttempts      int    `json:"max_attempts"`
 }
 
-type Engine struct {
-	registered map[string]struct{}
-}
+type Engine struct{}
 
 func NewEngine() *Engine {
-	registered := map[string]struct{}{}
-	for _, action := range []string{
-		"collect_diagnostics",
-		"restart_service",
-		"rollback_config",
-		"reload_nginx",
-		"clear_redis_keyspace",
-		"drain_postgres_connections",
-		"scale_worker_simulation",
-		"revert_feature_flag",
-		"disable_bad_route",
-	} {
-		registered[action] = struct{}{}
-	}
-	return &Engine{registered: registered}
+	return &Engine{}
 }
 
 func (e *Engine) Evaluate(input Input) Decision {
@@ -72,7 +59,7 @@ func (e *Engine) Evaluate(input Input) Decision {
 		decision.Reason = "High-risk actions are blocked"
 		return decision
 	}
-	if _, ok := e.registered[input.Remediation.Type]; !ok {
+	if !actions.IsRegistered(input.Remediation.Type) {
 		decision.Reason = "Remediation type is not registered"
 		return decision
 	}
@@ -84,8 +71,8 @@ func (e *Engine) Evaluate(input Input) Decision {
 		decision.Reason = "Circuit breaker: repeated remediation failures"
 		return decision
 	}
-	if input.Remediation.Type == "clear_redis_keyspace" && !strings.HasPrefix(input.Remediation.Target, "demo:pressure:") {
-		decision.Reason = "Redis remediation is restricted to demo:pressure:* keys"
+	if err := actions.Validate(input.Remediation.Type, input.Remediation.Target, input.Remediation.Parameters); err != nil {
+		decision.Reason = err.Error()
 		return decision
 	}
 

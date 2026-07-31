@@ -207,6 +207,34 @@ class RemediationGovernanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("argus_ai_advisory_confidence_score", metrics)
         self.assertIn("argus_ai_governance_decisions_total", metrics)
 
+    async def test_typed_parameters_are_authoritative_not_model_controlled(self) -> None:
+        candidate = DeterministicCandidate(
+            action_type="resize_connection_pool",
+            target="payments-api",
+            parameters={"size": 20},
+            risk="medium",
+            requires_approval=True,
+        )
+        llm = FakeLLM(json.dumps({
+            "proposals": [{
+                "action_type": "resize_connection_pool",
+                "target": "payments-api",
+                "rationale": "pool evidence supports a bounded resize",
+                "confidence": 0.84,
+            }]
+        }))
+        verdikt = FakeVerdikt()
+        advisor = RemediationAdvisor(
+            ObservedLLM(llm, self.metrics, "mock", "test"), verdikt, self.metrics
+        )
+
+        result = await advisor.suggest(
+            {"id": "inc-42", "environment": "local"}, [], [candidate], 0.82
+        )
+
+        self.assertEqual(result["suggestions"][0]["parameters"], {"size": 20})
+        self.assertEqual(verdikt.calls[0]["parameters"], {"size": 20})
+
 
 if __name__ == "__main__":
     unittest.main()

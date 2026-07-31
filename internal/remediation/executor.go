@@ -200,6 +200,7 @@ func (e *HeliosExecutor) getWorkflow(ctx context.Context, workflowID string) (he
 }
 
 func (e *HeliosExecutor) workflowSpec(remediation incidents.RemediationAction, incident incidents.Incident, dryRun bool) map[string]any {
+	parametersJSON, _ := json.Marshal(remediation.Parameters)
 	return map[string]any{
 		"name": fmt.Sprintf("argus-remediation-%s", remediation.ID),
 		"labels": map[string]string{
@@ -216,6 +217,7 @@ func (e *HeliosExecutor) workflowSpec(remediation incidents.RemediationAction, i
 			"action_type":      remediation.ActionType,
 			"target":           remediation.Target,
 			"risk":             remediation.Risk,
+			"parameters":       string(parametersJSON),
 			"dry_run":          fmt.Sprintf("%t", dryRun),
 		},
 		"tasks": []map[string]any{
@@ -246,6 +248,7 @@ func (e *HeliosExecutor) workflowSpec(remediation incidents.RemediationAction, i
 						"action_type":      remediation.ActionType,
 						"target":           remediation.Target,
 						"risk":             remediation.Risk,
+						"parameters":       remediation.Parameters,
 						"idempotency_key":  remediation.IdempotencyKey,
 						"attempt":          remediation.Attempt,
 						"dry_run":          dryRun,

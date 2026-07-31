@@ -41,7 +41,8 @@ func main() {
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
 	metrics := telemetry.MustRegister()
-	runner := workers.NewRunner(store, auditor, queueClient, metrics, workers.DefaultHandlers()...)
+	controlState := workers.NewPostgresControlStateStore(database)
+	runner := workers.NewRunner(store, auditor, queueClient, metrics, workers.DefaultHandlers(controlState)...)
 
 	logger.Info("starting argus-worker", "worker_id", cfg.WorkerID)
 	if err := runner.Start(ctx, cfg.WorkerID); err != nil && err != context.Canceled {

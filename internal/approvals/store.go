@@ -3,6 +3,7 @@ package approvals
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,11 +43,11 @@ func (s *Store) Create(ctx context.Context, request Request) (Request, error) {
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO approval_requests (
-			id, remediation_id, incident_id, action_type, target, risk, status,
+			id, remediation_id, incident_id, action_type, target, parameters, risk, status,
 			requested_by, requested_at, escalates_at, expires_at,
 			notification_status, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-	`, request.ID, request.RemediationID, request.IncidentID, request.ActionType, request.Target,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+	`, request.ID, request.RemediationID, request.IncidentID, request.ActionType, request.Target, mustJSON(request.Parameters),
 		request.Risk, request.Status, request.RequestedBy, request.RequestedAt,
 		request.EscalatesAt, request.ExpiresAt, request.NotificationStatus,
 		request.CreatedAt, request.UpdatedAt)
@@ -67,7 +68,7 @@ func (s *Store) Create(ctx context.Context, request Request) (Request, error) {
 		AfterState: map[string]any{
 			"status": request.Status, "remediation_id": request.RemediationID,
 			"action_type": request.ActionType, "target": request.Target,
-			"risk": request.Risk, "expires_at": request.ExpiresAt,
+			"parameters": request.Parameters, "risk": request.Risk, "expires_at": request.ExpiresAt,
 		},
 	}); err != nil {
 		return Request{}, err
@@ -438,7 +439,7 @@ func expireRemediationAndAudit(ctx context.Context, tx *sql.Tx, request Request,
 }
 
 const approvalSelect = `
-	SELECT id, remediation_id, incident_id, action_type, target, risk, status,
+	SELECT id, remediation_id, incident_id, action_type, target, parameters, risk, status,
 	       requested_by, requested_at, escalates_at, expires_at, escalated_at,
 	       decided_at, COALESCE(decided_by, ''), COALESCE(decision_reason, ''),
 	       COALESCE(decision_source, ''), notification_status, notification_attempts,
@@ -463,9 +464,10 @@ func getByRemediation(ctx context.Context, db queryRower, remediationID string, 
 
 func scanRequest(row scanner) (Request, error) {
 	var request Request
+	var parametersJSON []byte
 	err := row.Scan(
 		&request.ID, &request.RemediationID, &request.IncidentID, &request.ActionType,
-		&request.Target, &request.Risk, &request.Status, &request.RequestedBy,
+		&request.Target, &parametersJSON, &request.Risk, &request.Status, &request.RequestedBy,
 		&request.RequestedAt, &request.EscalatesAt, &request.ExpiresAt,
 		&request.EscalatedAt, &request.DecidedAt, &request.DecidedBy,
 		&request.DecisionReason, &request.DecisionSource, &request.NotificationStatus,
@@ -478,7 +480,16 @@ func scanRequest(row scanner) (Request, error) {
 	if err != nil {
 		return Request{}, fmt.Errorf("scan approval request: %w", err)
 	}
+	_ = json.Unmarshal(parametersJSON, &request.Parameters)
 	return request, nil
+}
+
+func mustJSON(value map[string]any) []byte {
+	if value == nil {
+		return []byte(`{}`)
+	}
+	encoded, _ := json.Marshal(value)
+	return encoded
 }
 
 func writeAuditTx(ctx context.Context, tx *sql.Tx, entry audit.Entry) error {

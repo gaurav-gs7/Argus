@@ -48,6 +48,20 @@ The actor is derived from the verified OIDC token's issuer and subject. Signatur
 
 Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
 
+Parameterized actions carry immutable desired state through proposal, policy, approval notification, audit, worker execution, and optional Helios delegation:
+
+```json
+{
+  "action_type": "resize_connection_pool",
+  "target": "payments-api",
+  "parameters": {"size": 20},
+  "risk": "medium",
+  "status": "awaiting_approval"
+}
+```
+
+Parameters are selected by deterministic RCA, not by the LLM. The custom Go policy and worker both validate them. The parameter object is included in proposal matching and the idempotency-key digest.
+
 Audit list responses include `chain_position`, `previous_hash`, `entry_hash`, and `hash_version`. Verification returns `200` with `valid: true` when every entry and the persisted chain head agree. It returns `409` with the first invalid position and a bounded reason when tampering, deletion, reordering, or a head mismatch is detected.
 
 The Slack endpoint accepts Slack's form-encoded interactivity payload. A signed button callback opens a reason modal; only the signed modal submission decides the request. Slack user IDs must map to Argus identities using `ARGUS_SLACK_APPROVERS`.

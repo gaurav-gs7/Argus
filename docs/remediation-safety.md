@@ -16,6 +16,8 @@
 - webhook notifications are HTTPS-only outside loopback and can be HMAC-signed
 - repeated failures trigger policy denial
 - idempotency keys prevent duplicate execution
+- action parameters are part of proposal deduplication and idempotency identity
+- durable execution receipts make JetStream replay safe
 
 ## Approved V1 Actions
 
@@ -26,6 +28,23 @@
 - `drain_postgres_connections`
 - `disable_bad_route`
 - `revert_feature_flag`
+- `restart_pod`
+- `resize_connection_pool`
+- `toggle_feature_flag`
+- `purge_cache`
+
+## Typed Handler Boundaries
+
+| Handler | Target | Parameters | Local execution |
+| --- | --- | --- | --- |
+| `restart_pod` | `local/<pod>` or `demo/<pod>` | none | Sets a deterministic restart token in durable control state |
+| `resize_connection_pool` | service DNS label | `size` from 2 to 50 | Sets an exact desired pool size |
+| `toggle_feature_flag` | allow-listed `service/flag` | boolean `enabled` | Sets an exact desired flag state |
+| `purge_cache` | scoped `demo:<segment>:*` | `max_keys` from 1 to 1000 | Records a bounded, replay-safe purge intent |
+
+The default laptop profile intentionally uses PostgreSQL-backed control state rather than requiring Kubernetes or another configuration service. Production adapters can map the same typed desired state to Kubernetes patches, a dynamic-config API, or a cache control endpoint. They must retain the same validation and idempotency receipt contract. Arbitrary shell strings are never accepted.
+
+Dry-run reads the current target state and returns the proposed state without writing either target state or an execution receipt. Execute takes advisory locks for both the idempotency key and target, applies the desired state, and stores the receipt in one transaction. Replayed JetStream messages return the original result with `reused: true`.
 
 ## Approval State Machine
 

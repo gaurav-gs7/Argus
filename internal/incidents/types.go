@@ -125,6 +125,7 @@ type RemediationAction struct {
 	IncidentID     string         `json:"incident_id"`
 	ActionType     string         `json:"action_type"`
 	Target         string         `json:"target"`
+	Parameters     map[string]any `json:"parameters"`
 	Status         string         `json:"status"`
 	Risk           string         `json:"risk"`
 	IdempotencyKey string         `json:"idempotency_key"`

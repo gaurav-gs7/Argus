@@ -61,3 +61,42 @@ func TestEvaluateRestrictsRedisTarget(t *testing.T) {
 		t.Fatalf("expected broad redis keyspace target to be blocked")
 	}
 }
+
+func TestEvaluateTypedActionBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		action     string
+		target     string
+		parameters map[string]any
+		allow      bool
+	}{
+		{"pod", "restart_pod", "local/payments-api", nil, true},
+		{"production pod", "restart_pod", "production/payments-api", nil, false},
+		{"pool", "resize_connection_pool", "payments-api", map[string]any{"size": 20}, true},
+		{"oversized pool", "resize_connection_pool", "payments-api", map[string]any{"size": 51}, false},
+		{"flag", "toggle_feature_flag", "payments-api/optional-notifications", map[string]any{"enabled": false}, true},
+		{"unknown flag", "toggle_feature_flag", "payments-api/auth", map[string]any{"enabled": false}, false},
+		{"cache", "purge_cache", "demo:pressure:*", map[string]any{"max_keys": 500}, true},
+		{"broad cache", "purge_cache", "demo:*", map[string]any{"max_keys": 500}, false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			engine := NewEngine()
+			var input Input
+			input.Actor.Role = "operator"
+			input.Incident.Environment = "local"
+			input.Remediation.Type = test.action
+			input.Remediation.Target = test.target
+			input.Remediation.Parameters = test.parameters
+			input.Remediation.Risk = "medium"
+			decision := engine.Evaluate(input)
+			if decision.Allow != test.allow {
+				t.Fatalf("Evaluate() allow=%t reason=%q, want %t", decision.Allow, decision.Reason, test.allow)
+			}
+			if decision.Allow && !decision.RequiresApproval {
+				t.Fatal("medium-risk typed action did not require approval")
+			}
+		})
+	}
+}

@@ -583,14 +583,15 @@ func (s *Store) CreateRemediation(ctx context.Context, action RemediationAction)
 		action.CreatedAt = time.Now().UTC()
 	}
 	policyJSON, _ := json.Marshal(action.PolicyDecision)
+	parametersJSON := marshalJSONObject(action.Parameters)
 	resultJSON, _ := json.Marshal(action.Result)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO remediation_actions (
-			id, incident_id, action_type, target, status, risk, idempotency_key,
+			id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 			proposed_by, approved_by, policy_decision, dry_run, attempt, max_attempts,
 			queued_at, started_at, completed_at, result, error, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-	`, action.ID, action.IncidentID, action.ActionType, action.Target, action.Status, action.Risk, action.IdempotencyKey,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+	`, action.ID, action.IncidentID, action.ActionType, action.Target, parametersJSON, action.Status, action.Risk, action.IdempotencyKey,
 		action.ProposedBy, nullable(action.ApprovedBy), policyJSON, action.DryRun, action.Attempt, action.MaxAttempts,
 		action.QueuedAt, action.StartedAt, action.CompletedAt, resultJSON, nullable(action.Error), action.CreatedAt)
 	if err != nil {
@@ -601,7 +602,7 @@ func (s *Store) CreateRemediation(ctx context.Context, action RemediationAction)
 
 func (s *Store) ListRemediations(ctx context.Context, incidentID string) ([]RemediationAction, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, incident_id, action_type, target, status, risk, idempotency_key,
+		SELECT id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
 		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
 		FROM remediation_actions
@@ -616,14 +617,15 @@ func (s *Store) ListRemediations(ctx context.Context, incidentID string) ([]Reme
 	var items []RemediationAction
 	for rows.Next() {
 		var item RemediationAction
-		var policyJSON, resultJSON []byte
+		var parametersJSON, policyJSON, resultJSON []byte
 		if err := rows.Scan(
-			&item.ID, &item.IncidentID, &item.ActionType, &item.Target, &item.Status, &item.Risk, &item.IdempotencyKey,
+			&item.ID, &item.IncidentID, &item.ActionType, &item.Target, &parametersJSON, &item.Status, &item.Risk, &item.IdempotencyKey,
 			&item.ProposedBy, &item.ApprovedBy, &policyJSON, &item.DryRun, &item.Attempt, &item.MaxAttempts,
 			&item.QueuedAt, &item.StartedAt, &item.CompletedAt, &resultJSON, &item.Error, &item.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan remediation: %w", err)
 		}
+		_ = json.Unmarshal(parametersJSON, &item.Parameters)
 		_ = json.Unmarshal(policyJSON, &item.PolicyDecision)
 		_ = json.Unmarshal(resultJSON, &item.Result)
 		items = append(items, item)
@@ -633,7 +635,7 @@ func (s *Store) ListRemediations(ctx context.Context, incidentID string) ([]Reme
 
 func (s *Store) GetRemediation(ctx context.Context, remediationID string) (RemediationAction, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, incident_id, action_type, target, status, risk, idempotency_key,
+		SELECT id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
 		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
 		FROM remediation_actions
@@ -647,15 +649,17 @@ func (s *Store) GetRemediation(ctx context.Context, remediationID string) (Remed
 	return item, nil
 }
 
-func (s *Store) CountRecentSimilarRemediations(ctx context.Context, incidentID, actionType, target string) (int, error) {
+func (s *Store) CountRecentSimilarRemediations(ctx context.Context, incidentID, actionType, target string, parameters map[string]any) (int, error) {
+	parametersJSON := marshalJSONObject(parameters)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM remediation_actions
 		WHERE incident_id = $1
 		  AND action_type = $2
 		  AND target = $3
+		  AND parameters = $4::jsonb
 		  AND created_at >= now() - interval '10 minutes'
-	`, incidentID, actionType, target)
+	`, incidentID, actionType, target, parametersJSON)
 	var count int
 	if err := row.Scan(&count); err != nil {
 		return 0, fmt.Errorf("count recent remediations: %w", err)
@@ -663,19 +667,21 @@ func (s *Store) CountRecentSimilarRemediations(ctx context.Context, incidentID, 
 	return count, nil
 }
 
-func (s *Store) FindActiveRemediationByAction(ctx context.Context, incidentID, actionType, target string) (*RemediationAction, error) {
+func (s *Store) FindActiveRemediationByAction(ctx context.Context, incidentID, actionType, target string, parameters map[string]any) (*RemediationAction, error) {
+	parametersJSON := marshalJSONObject(parameters)
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, incident_id, action_type, target, status, risk, idempotency_key,
+		SELECT id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
 		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
 		FROM remediation_actions
 		WHERE incident_id = $1
 		  AND action_type = $2
 		  AND target = $3
+		  AND parameters = $4::jsonb
 		  AND status NOT IN ('policy_blocked', 'rejected', 'succeeded', 'failed', 'timed_out', 'cancelled')
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, incidentID, actionType, target)
+	`, incidentID, actionType, target, parametersJSON)
 
 	item, err := scanRemediation(row)
 	if err == sql.ErrNoRows {
@@ -687,15 +693,17 @@ func (s *Store) FindActiveRemediationByAction(ctx context.Context, incidentID, a
 	return &item, nil
 }
 
-func (s *Store) CountFailedRemediations(ctx context.Context, incidentID, actionType, target string) (int, error) {
+func (s *Store) CountFailedRemediations(ctx context.Context, incidentID, actionType, target string, parameters map[string]any) (int, error) {
+	parametersJSON := marshalJSONObject(parameters)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM remediation_actions
 		WHERE incident_id = $1
 		  AND action_type = $2
 		  AND target = $3
+		  AND parameters = $4::jsonb
 		  AND status IN ('failed', 'timed_out')
-	`, incidentID, actionType, target)
+	`, incidentID, actionType, target, parametersJSON)
 	var count int
 	if err := row.Scan(&count); err != nil {
 		return 0, fmt.Errorf("count failed remediations: %w", err)
@@ -716,13 +724,32 @@ func (s *Store) UpdateRemediationApproval(ctx context.Context, remediationID, st
 }
 
 func (s *Store) MarkRemediationQueued(ctx context.Context, remediationID string, dryRun bool) error {
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = 'queued', queued_at = now(), dry_run = $2
-		WHERE id = $1
+		WHERE id = $1 AND status = 'approved'
 	`, remediationID, dryRun)
 	if err != nil {
 		return fmt.Errorf("mark remediation queued: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read remediation queue reservation result: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("remediation queue reservation is no longer available")
+	}
+	return nil
+}
+
+func (s *Store) ReleaseRemediationQueueReservation(ctx context.Context, remediationID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE remediation_actions
+		SET status = 'approved', queued_at = NULL
+		WHERE id = $1 AND status = 'queued'
+	`, remediationID)
+	if err != nil {
+		return fmt.Errorf("release remediation queue reservation: %w", err)
 	}
 	return nil
 }
@@ -830,14 +857,15 @@ type remediationScanner interface {
 
 func scanRemediation(row remediationScanner) (RemediationAction, error) {
 	var item RemediationAction
-	var policyJSON, resultJSON []byte
+	var parametersJSON, policyJSON, resultJSON []byte
 	if err := row.Scan(
-		&item.ID, &item.IncidentID, &item.ActionType, &item.Target, &item.Status, &item.Risk, &item.IdempotencyKey,
+		&item.ID, &item.IncidentID, &item.ActionType, &item.Target, &parametersJSON, &item.Status, &item.Risk, &item.IdempotencyKey,
 		&item.ProposedBy, &item.ApprovedBy, &policyJSON, &item.DryRun, &item.Attempt, &item.MaxAttempts,
 		&item.QueuedAt, &item.StartedAt, &item.CompletedAt, &resultJSON, &item.Error, &item.CreatedAt,
 	); err != nil {
 		return RemediationAction{}, err
 	}
+	_ = json.Unmarshal(parametersJSON, &item.Parameters)
 	_ = json.Unmarshal(policyJSON, &item.PolicyDecision)
 	_ = json.Unmarshal(resultJSON, &item.Result)
 	return item, nil
@@ -861,4 +889,12 @@ func nullable(value string) any {
 		return nil
 	}
 	return value
+}
+
+func marshalJSONObject(value map[string]any) []byte {
+	if value == nil {
+		return []byte(`{}`)
+	}
+	encoded, _ := json.Marshal(value)
+	return encoded
 }

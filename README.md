@@ -144,12 +144,20 @@ Alert titles and log evidence are treated as untrusted data. Direct prompt-injec
 
 A captured end-to-end governance run is committed at [docs/demo-evidence/ai-governance-verdikt.json](docs/demo-evidence/ai-governance-verdikt.json).
 
+To exercise all four parameterized handlers through policy, approval, worker execution, replay, and audit verification:
+
+```bash
+make demo-typed-remediations
+```
+
 ## Safety Model
 
 - no arbitrary shell execution from the API
 - remediations are registered typed handlers
 - every remediation supports dry-run
-- every remediation has an idempotency key
+- every remediation has a parameter-aware idempotency key
+- pod restart, pool resize, feature-flag toggle, and cache purge enforce bounded typed inputs
+- worker replays reuse durable PostgreSQL execution receipts instead of repeating side effects
 - medium-risk actions create a PostgreSQL-backed approval request
 - Slack or signed generic webhooks notify the on-call approver
 - approval and denial require an authenticated identity and a reason
@@ -176,7 +184,7 @@ Prometheus exposes `argus_audit_chain_integrity`, `argus_audit_chain_head_positi
 
 ## Human Approval
 
-The policy flag is not treated as approval. When policy returns `requires_approval`, Argus creates an `approval_requests` row bound to the exact remediation ID, action, target, incident, and deadline. Configure `ARGUS_APPROVAL_WEBHOOK_URL` with `ARGUS_APPROVAL_WEBHOOK_MODE=slack` for Slack notifications, or `generic` for a signed JSON notification. Generic payloads carry `X-Argus-Signature-256` when `ARGUS_APPROVAL_WEBHOOK_SECRET` is set.
+The policy flag is not treated as approval. When policy returns `requires_approval`, Argus creates an `approval_requests` row bound to the exact remediation ID, action, target, parameters, incident, and deadline. Configure `ARGUS_APPROVAL_WEBHOOK_URL` with `ARGUS_APPROVAL_WEBHOOK_MODE=slack` for Slack notifications, or `generic` for a signed JSON notification. Generic payloads carry `X-Argus-Signature-256` when `ARGUS_APPROVAL_WEBHOOK_SECRET` is set.
 
 Slack can complete the decision inside Slack: Argus verifies Slack's HMAC signature and five-minute replay window, checks an explicit `SLACK_USER_ID=argus-identity` allow-list, opens a modal that requires the approver's reason, and records the mapped identity. This requires a free Slack app with interactivity pointed at `/v1/approval-callbacks/slack`, plus `ARGUS_SLACK_SIGNING_SECRET`, `ARGUS_SLACK_BOT_TOKEN`, and `ARGUS_SLACK_APPROVERS`.
 

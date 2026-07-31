@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -292,8 +294,8 @@ func TestRepeatedExecutionReusesDurableRemediationWithoutRequeue(t *testing.T) {
 	if err != nil || !reused {
 		t.Fatalf("second execution reused=%t err=%v", reused, err)
 	}
-	if executor.calls != 1 {
-		t.Fatalf("executor calls=%d, want 1", executor.calls)
+	if executor.calls.Load() != 1 {
+		t.Fatalf("executor calls=%d, want 1", executor.calls.Load())
 	}
 
 	var queued, reusedAudit int
@@ -312,8 +314,168 @@ func TestRepeatedExecutionReusesDurableRemediationWithoutRequeue(t *testing.T) {
 	assertAuditChainValid(t, database)
 }
 
+func TestConcurrentExecutionReservesAndDispatchesOnce(t *testing.T) {
+	dsn := os.Getenv("ARGUS_INTEGRATION_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_INTEGRATION_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatalf("migrate postgres: %v", err)
+	}
+
+	serviceID := common.NewID("svc")
+	incidentID := common.NewID("inc")
+	remediationID := common.NewID("rem")
+	insertFixture(t, database, serviceID, incidentID, remediationID)
+	t.Cleanup(func() { cleanupFixture(database, "", remediationID, incidentID, serviceID) })
+	if _, err := database.ExecContext(ctx, `
+		UPDATE remediation_actions SET status = 'approved', approved_by = 'issuer#admin'
+		WHERE id = $1
+	`, remediationID); err != nil {
+		t.Fatalf("approve remediation fixture: %v", err)
+	}
+
+	executor := &countingExecutor{}
+	service := remediationpkg.NewService(
+		incidents.NewStore(database), audit.NewService(database), nil, nil,
+		executor, executionMetrics(), nil,
+	)
+	const callers = 20
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var reusedCount atomic.Int32
+	errors := make(chan error, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			reused, err := service.Execute(context.Background(), remediationID, false, "issuer#admin")
+			if reused {
+				reusedCount.Add(1)
+			}
+			errors <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent Execute() error: %v", err)
+		}
+	}
+	if executor.calls.Load() != 1 || reusedCount.Load() != callers-1 {
+		t.Fatalf("dispatches=%d reused=%d, want 1 and %d", executor.calls.Load(), reusedCount.Load(), callers-1)
+	}
+}
+
+func TestLocalQueuePersistsExecutionModeBeforePublish(t *testing.T) {
+	dsn := os.Getenv("ARGUS_INTEGRATION_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_INTEGRATION_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatalf("migrate postgres: %v", err)
+	}
+
+	serviceID := common.NewID("svc")
+	incidentID := common.NewID("inc")
+	remediationID := common.NewID("rem")
+	insertFixture(t, database, serviceID, incidentID, remediationID)
+	t.Cleanup(func() { cleanupFixture(database, "", remediationID, incidentID, serviceID) })
+	if _, err := database.ExecContext(ctx, `
+		UPDATE remediation_actions SET status = 'approved', approved_by = 'issuer#admin'
+		WHERE id = $1
+	`, remediationID); err != nil {
+		t.Fatalf("approve remediation fixture: %v", err)
+	}
+
+	executor := &observingLocalExecutor{db: database}
+	service := remediationpkg.NewService(
+		incidents.NewStore(database), audit.NewService(database), nil, nil,
+		executor, executionMetrics(), nil,
+	)
+	reused, err := service.Execute(ctx, remediationID, false, "issuer#admin")
+	if err != nil || reused {
+		t.Fatalf("Execute() reused=%t error=%v", reused, err)
+	}
+	if executor.observedStatus != remediationpkg.StateQueued || executor.observedDryRun {
+		t.Fatalf("executor observed status=%q dry_run=%t", executor.observedStatus, executor.observedDryRun)
+	}
+	var status string
+	var dryRun bool
+	if err := database.QueryRowContext(ctx, `
+		SELECT status, dry_run FROM remediation_actions WHERE id = $1
+	`, remediationID).Scan(&status, &dryRun); err != nil {
+		t.Fatalf("read queued remediation: %v", err)
+	}
+	if status != remediationpkg.StateQueued || dryRun {
+		t.Fatalf("persisted status=%q dry_run=%t", status, dryRun)
+	}
+}
+
+func TestLocalQueuePublishFailureReleasesReservation(t *testing.T) {
+	dsn := os.Getenv("ARGUS_INTEGRATION_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_INTEGRATION_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatalf("migrate postgres: %v", err)
+	}
+
+	serviceID := common.NewID("svc")
+	incidentID := common.NewID("inc")
+	remediationID := common.NewID("rem")
+	insertFixture(t, database, serviceID, incidentID, remediationID)
+	t.Cleanup(func() { cleanupFixture(database, "", remediationID, incidentID, serviceID) })
+	if _, err := database.ExecContext(ctx, `
+		UPDATE remediation_actions SET status = 'approved', approved_by = 'issuer#admin'
+		WHERE id = $1
+	`, remediationID); err != nil {
+		t.Fatalf("approve remediation fixture: %v", err)
+	}
+
+	executor := &observingLocalExecutor{db: database, executeErr: errors.New("publish failed")}
+	service := remediationpkg.NewService(
+		incidents.NewStore(database), audit.NewService(database), nil, nil,
+		executor, executionMetrics(), nil,
+	)
+	if _, err := service.Execute(ctx, remediationID, false, "issuer#admin"); err == nil {
+		t.Fatal("Execute() accepted failed queue publish")
+	}
+	var status string
+	var queuedAt *time.Time
+	if err := database.QueryRowContext(ctx, `
+		SELECT status, queued_at FROM remediation_actions WHERE id = $1
+	`, remediationID).Scan(&status, &queuedAt); err != nil {
+		t.Fatalf("read released remediation: %v", err)
+	}
+	if status != remediationpkg.StateApproved || queuedAt != nil {
+		t.Fatalf("queue reservation was not released: status=%q queued_at=%v", status, queuedAt)
+	}
+}
+
 type countingExecutor struct {
-	calls int
+	calls atomic.Int32
 }
 
 func (e *countingExecutor) Name() string {
@@ -321,8 +483,42 @@ func (e *countingExecutor) Name() string {
 }
 
 func (e *countingExecutor) Execute(context.Context, incidents.RemediationAction, incidents.Incident, bool) (remediationpkg.ExecutionOutcome, error) {
-	e.calls++
+	e.calls.Add(1)
 	return remediationpkg.ExecutionOutcome{Status: remediationpkg.StateQueued}, nil
+}
+
+type observingLocalExecutor struct {
+	db             *sql.DB
+	observedStatus string
+	observedDryRun bool
+	executeErr     error
+}
+
+func (e *observingLocalExecutor) Name() string {
+	return "local"
+}
+
+func (e *observingLocalExecutor) Execute(_ context.Context, remediation incidents.RemediationAction, _ incidents.Incident, _ bool) (remediationpkg.ExecutionOutcome, error) {
+	if err := e.db.QueryRow(`
+		SELECT status, dry_run FROM remediation_actions WHERE id = $1
+	`, remediation.ID).Scan(&e.observedStatus, &e.observedDryRun); err != nil {
+		return remediationpkg.ExecutionOutcome{}, err
+	}
+	if e.executeErr != nil {
+		return remediationpkg.ExecutionOutcome{}, e.executeErr
+	}
+	return remediationpkg.ExecutionOutcome{Status: remediationpkg.StateQueued}, nil
+}
+
+func executionMetrics() *telemetry.Metrics {
+	return &telemetry.Metrics{
+		RemediationFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_local_queue_remediation_failures_total",
+		}, []string{"action_type"}),
+		RemediationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "test_local_queue_remediation_duration_seconds",
+		}, []string{"action_type"}),
+	}
 }
 
 func signedSlackHeaders(secret string, body []byte, now time.Time) http.Header {

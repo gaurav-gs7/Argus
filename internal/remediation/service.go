@@ -2,6 +2,9 @@ package remediation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -32,8 +35,14 @@ func NewService(store *incidents.Store, auditor *audit.Service, policyEngine *po
 	return &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor, approvals: approvalWorkflow}
 }
 
-func BuildIdempotencyKey(incidentID, actionType, target string, attempt int) string {
-	return fmt.Sprintf("%s_%s_%s_%d", incidentID, actionType, target, attempt)
+func BuildIdempotencyKey(incidentID, actionType, target string, attempt int, parameters ...map[string]any) string {
+	base := fmt.Sprintf("%s_%s_%s_%d", incidentID, actionType, target, attempt)
+	if len(parameters) == 0 || len(parameters[0]) == 0 {
+		return base
+	}
+	encoded, _ := json.Marshal(parameters[0])
+	sum := sha256.Sum256(encoded)
+	return base + "_" + hex.EncodeToString(sum[:6])
 }
 
 func (s *Service) Propose(ctx context.Context, incident incidents.Incident, candidates []rca.Candidate, actor, actorRole string) ([]incidents.RemediationAction, error) {
@@ -41,7 +50,10 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 	awaitingApproval := false
 
 	for _, candidate := range candidates {
-		if existing, err := s.store.FindActiveRemediationByAction(ctx, incident.ID, candidate.ActionType, candidate.Target); err != nil {
+		if candidate.Parameters == nil {
+			candidate.Parameters = map[string]any{}
+		}
+		if existing, err := s.store.FindActiveRemediationByAction(ctx, incident.ID, candidate.ActionType, candidate.Target, candidate.Parameters); err != nil {
 			return nil, err
 		} else if existing != nil {
 			if existing.Status == StateAwaitingApproval && s.approvals != nil {
@@ -60,11 +72,11 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 			continue
 		}
 
-		recentCount, err := s.store.CountRecentSimilarRemediations(ctx, incident.ID, candidate.ActionType, candidate.Target)
+		recentCount, err := s.store.CountRecentSimilarRemediations(ctx, incident.ID, candidate.ActionType, candidate.Target, candidate.Parameters)
 		if err != nil {
 			return nil, err
 		}
-		failedCount, err := s.store.CountFailedRemediations(ctx, incident.ID, candidate.ActionType, candidate.Target)
+		failedCount, err := s.store.CountFailedRemediations(ctx, incident.ID, candidate.ActionType, candidate.Target, candidate.Parameters)
 		if err != nil {
 			return nil, err
 		}
@@ -80,6 +92,7 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		input.Remediation.Target = candidate.Target
 		input.Remediation.Risk = candidate.Risk
 		input.Remediation.DryRun = true
+		input.Remediation.Parameters = candidate.Parameters
 		input.History.SameActionLast10m = recentCount
 		input.History.FailedAttempts = failedCount
 
@@ -103,9 +116,10 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 			IncidentID:     incident.ID,
 			ActionType:     candidate.ActionType,
 			Target:         candidate.Target,
+			Parameters:     candidate.Parameters,
 			Status:         status,
 			Risk:           candidate.Risk,
-			IdempotencyKey: BuildIdempotencyKey(incident.ID, candidate.ActionType, candidate.Target, attempt),
+			IdempotencyKey: BuildIdempotencyKey(incident.ID, candidate.ActionType, candidate.Target, attempt, candidate.Parameters),
 			ProposedBy:     actor,
 			PolicyDecision: map[string]any{
 				"allow":             decision.Allow,
@@ -221,12 +235,26 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	}
 
 	start := time.Now()
+	// Reserve execution before dispatch so concurrent callers and fast workers
+	// cannot race the persisted mode or enqueue the same action twice.
+	if err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun); err != nil {
+		latest, getErr := s.store.GetRemediation(ctx, remediation.ID)
+		if getErr == nil && (latest.Status == StateQueued || latest.Status == StateRunning || latest.Status == StateSucceeded) {
+			_ = s.auditor.Write(ctx, audit.Entry{
+				ActorID: actor, ActorType: "user", Action: "remediation.execution_reused", ResourceType: "remediation", ResourceID: remediationID,
+				AfterState: map[string]any{"status": latest.Status, "idempotency_key": latest.IdempotencyKey},
+			})
+			return true, nil
+		}
+		return false, err
+	}
 	outcome, err := s.exec.Execute(ctx, remediation, incident, dryRun)
 	if err != nil {
+		_ = s.store.ReleaseRemediationQueueReservation(ctx, remediation.ID)
 		return false, err
 	}
 
-	if err := s.applyOutcome(ctx, remediation, outcome, dryRun); err != nil {
+	if err := s.applyQueuedOutcome(ctx, remediation, outcome); err != nil {
 		return false, err
 	}
 	if strings.EqualFold(outcome.Status, StateFailed) {
@@ -245,19 +273,13 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	})
 }
 
-func (s *Service) applyOutcome(ctx context.Context, remediation incidents.RemediationAction, outcome ExecutionOutcome, dryRun bool) error {
+func (s *Service) applyQueuedOutcome(ctx context.Context, remediation incidents.RemediationAction, outcome ExecutionOutcome) error {
 	switch outcome.Status {
 	case StateQueued:
-		return s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun)
+		return nil
 	case StateRunning:
-		if err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun); err != nil {
-			return err
-		}
 		return s.store.MarkRemediationRunning(ctx, remediation.ID)
 	case StateSucceeded:
-		if err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun); err != nil {
-			return err
-		}
 		if err := s.store.MarkRemediationRunning(ctx, remediation.ID); err != nil {
 			return err
 		}

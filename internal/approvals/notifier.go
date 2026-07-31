@@ -137,8 +137,10 @@ func (n *WebhookNotifier) slackPayload(request Request, escalation bool) map[str
 	if escalation {
 		prefix = "Approval escalation"
 	}
-	text := fmt.Sprintf("*%s*: `%s` on `%s`\nRisk: *%s* | Incident: `%s`\nDeadline: %s\nRequest: `%s`\nDecision endpoint: `%s`\nA reason and an authenticated operator/admin identity are required.",
+	parameters, _ := json.Marshal(request.Parameters)
+	text := fmt.Sprintf("*%s*: `%s` on `%s`\nParameters: `%s`\nRisk: *%s* | Incident: `%s`\nDeadline: %s\nRequest: `%s`\nDecision endpoint: `%s`\nA reason and an authenticated operator/admin identity are required.",
 		slackEscape(prefix), slackEscape(request.ActionType), slackEscape(request.Target),
+		slackEscape(string(parameters)),
 		slackEscape(request.Risk), slackEscape(request.IncidentID),
 		request.ExpiresAt.UTC().Format(time.RFC3339), slackEscape(request.ID),
 		slackEscape(n.baseURL+"/v1/approval-requests/"+request.ID+"/decision"))

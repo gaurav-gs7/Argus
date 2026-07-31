@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
+	"github.com/gauravgs7/argus/internal/actions"
 	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/incidents"
 	"github.com/gauravgs7/argus/internal/queue"
@@ -17,6 +19,7 @@ import (
 
 type Handler interface {
 	Name() string
+	Validate(req incidents.RemediationAction) error
 	Execute(ctx context.Context, req incidents.RemediationAction) (map[string]any, error)
 	DryRun(ctx context.Context, req incidents.RemediationAction) (map[string]any, error)
 }
@@ -83,6 +86,16 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, "no handler registered")
 		_ = msg.Ack()
 		return fmt.Errorf("no handler for %s", remediation.ActionType)
+	}
+	if err := handler.Validate(remediation); err != nil {
+		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
+		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, err.Error())
+		_ = r.auditor.Write(ctx, audit.Entry{
+			ActorType: "system", Action: "remediation.validation_failed", ResourceType: "remediation", ResourceID: remediation.ID,
+			AfterState: map[string]any{"status": remediationpkg.StateFailed, "error": err.Error()},
+		})
+		_ = msg.Ack()
+		return err
 	}
 
 	start := time.Now()
@@ -161,17 +174,15 @@ func (r *Runner) heartbeat(ctx context.Context, workerID string) {
 	defer ticker.Stop()
 
 	hostname, _ := os.Hostname()
+	supportedActions := make([]string, 0, len(r.handlers))
+	for action := range r.handlers {
+		supportedActions = append(supportedActions, action)
+	}
+	sort.Strings(supportedActions)
 	for {
 		now := time.Now().UTC()
 		r.metrics.WorkerHeartbeatAgeSeconds.WithLabelValues(workerID).Set(0)
-		_ = r.store.UpsertWorkerHeartbeat(ctx, workerID, hostname, now, []string{
-			"restart_service",
-			"rollback_config",
-			"reload_nginx",
-			"clear_redis_keyspace",
-			"drain_postgres_connections",
-			"revert_feature_flag",
-		})
+		_ = r.store.UpsertWorkerHeartbeat(ctx, workerID, hostname, now, supportedActions)
 		select {
 		case <-ctx.Done():
 			return
@@ -186,6 +197,12 @@ type staticHandler struct {
 }
 
 func (h staticHandler) Name() string { return h.name }
+func (h staticHandler) Validate(req incidents.RemediationAction) error {
+	if req.ActionType != h.name {
+		return fmt.Errorf("handler %s cannot execute action %s", h.name, req.ActionType)
+	}
+	return actions.Validate(req.ActionType, req.Target, req.Parameters)
+}
 
 func (h staticHandler) Execute(ctx context.Context, req incidents.RemediationAction) (map[string]any, error) {
 	return map[string]any{
@@ -203,7 +220,7 @@ func (h staticHandler) DryRun(ctx context.Context, req incidents.RemediationActi
 	}, nil
 }
 
-func DefaultHandlers() []Handler {
+func DefaultHandlers(state ControlStateStore) []Handler {
 	return []Handler{
 		staticHandler{name: "restart_service", message: "Typed handler validated restart_service; local demo execution remains bounded and auditable"},
 		staticHandler{name: "rollback_config", message: "Typed handler validated rollback_config against known-good demo configuration"},
@@ -212,5 +229,9 @@ func DefaultHandlers() []Handler {
 		staticHandler{name: "drain_postgres_connections", message: "Typed handler validated demo-only postgres connection drain"},
 		staticHandler{name: "revert_feature_flag", message: "Typed handler validated optional notification feature flag revert"},
 		staticHandler{name: "disable_bad_route", message: "Typed handler validated disabling only the affected bad demo route"},
+		NewPodRestartHandler(state),
+		NewConnectionPoolResizeHandler(state),
+		NewFeatureFlagToggleHandler(state),
+		NewCachePurgeHandler(state),
 	}
 }

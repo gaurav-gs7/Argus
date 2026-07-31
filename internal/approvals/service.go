@@ -46,7 +46,7 @@ func (s *Service) RequestApproval(ctx context.Context, incident incidents.Incide
 	now := s.now()
 	request := Request{
 		ID: common.NewID("apr"), RemediationID: remediation.ID, IncidentID: incident.ID,
-		ActionType: remediation.ActionType, Target: remediation.Target, Risk: remediation.Risk,
+		ActionType: remediation.ActionType, Target: remediation.Target, Parameters: remediation.Parameters, Risk: remediation.Risk,
 		Status: StatusPending, RequestedBy: remediation.ProposedBy, RequestedAt: now,
 		EscalatesAt: now.Add(s.escalateAfter), ExpiresAt: now.Add(s.timeout),
 		NotificationStatus: "pending", CreatedAt: now, UpdatedAt: now,

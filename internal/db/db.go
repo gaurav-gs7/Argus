@@ -129,6 +129,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			incident_id TEXT REFERENCES incidents(id),
 			action_type TEXT NOT NULL,
 			target TEXT NOT NULL,
+			parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
 			status TEXT NOT NULL,
 			risk TEXT NOT NULL CHECK (risk IN ('low', 'medium', 'high')),
 			idempotency_key TEXT NOT NULL UNIQUE,
@@ -147,12 +148,28 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_remediation_incident ON remediation_actions(incident_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_remediation_status ON remediation_actions(status);`,
+		`ALTER TABLE remediation_actions ADD COLUMN IF NOT EXISTS parameters JSONB NOT NULL DEFAULT '{}'::jsonb;`,
+		`CREATE TABLE IF NOT EXISTS remediation_target_states (
+			resource_type TEXT NOT NULL,
+			target TEXT NOT NULL,
+			state JSONB NOT NULL DEFAULT '{}'::jsonb,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (resource_type, target)
+		);`,
+		`CREATE TABLE IF NOT EXISTS remediation_execution_receipts (
+			idempotency_key TEXT PRIMARY KEY,
+			action_type TEXT NOT NULL,
+			target TEXT NOT NULL,
+			result JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);`,
 		`CREATE TABLE IF NOT EXISTS approval_requests (
 			id TEXT PRIMARY KEY,
 			remediation_id TEXT NOT NULL REFERENCES remediation_actions(id),
 			incident_id TEXT NOT NULL REFERENCES incidents(id),
 			action_type TEXT NOT NULL,
 			target TEXT NOT NULL,
+			parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
 			risk TEXT NOT NULL CHECK (risk IN ('low', 'medium', 'high')),
 			status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'cancelled')),
 			requested_by TEXT NOT NULL,
@@ -171,6 +188,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_request_remediation ON approval_requests(remediation_id);`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS parameters JSONB NOT NULL DEFAULT '{}'::jsonb;`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_pending_escalation ON approval_requests(escalates_at) WHERE status = 'pending' AND escalated_at IS NULL;`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_pending_expiry ON approval_requests(expires_at) WHERE status = 'pending';`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (

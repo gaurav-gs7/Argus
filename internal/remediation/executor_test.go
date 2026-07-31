@@ -54,6 +54,7 @@ func TestHeliosExecutorExecute(t *testing.T) {
 			IncidentID:     "inc_123",
 			ActionType:     "restart_service",
 			Target:         "payments-api",
+			Parameters:     map[string]any{"strategy": "bounded"},
 			Risk:           "medium",
 			IdempotencyKey: "inc_123_restart_service_payments-api_1",
 			Attempt:        1,
@@ -87,6 +88,10 @@ func TestHeliosExecutorExecute(t *testing.T) {
 	}
 	if task["task_type"] != "persist_artifact" {
 		t.Fatalf("expected persist_artifact task type, got %#v", task["task_type"])
+	}
+	metadata, ok := submitted["metadata"].(map[string]any)
+	if !ok || metadata["parameters"] != `{"strategy":"bounded"}` {
+		t.Fatalf("Helios metadata did not preserve canonical parameters: %#v", submitted["metadata"])
 	}
 }
 

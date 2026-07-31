@@ -25,10 +25,11 @@ type Service struct {
 }
 
 type Candidate struct {
-	ActionType       string `json:"action_type"`
-	Target           string `json:"target"`
-	Risk             string `json:"risk"`
-	RequiresApproval bool   `json:"requires_approval"`
+	ActionType       string         `json:"action_type"`
+	Target           string         `json:"target"`
+	Parameters       map[string]any `json:"parameters,omitempty"`
+	Risk             string         `json:"risk"`
+	RequiresApproval bool           `json:"requires_approval"`
 }
 
 type scoredHypothesis struct {
@@ -198,12 +199,13 @@ func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Sign
 			Name: "PostgreSQL connection pool exhaustion",
 			Candidates: []Candidate{
 				{ActionType: "drain_postgres_connections", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-				{ActionType: "restart_service", Target: incident.Service, Risk: "medium", RequiresApproval: true},
+				{ActionType: "resize_connection_pool", Target: incident.Service, Parameters: map[string]any{"size": 20}, Risk: "medium", RequiresApproval: true},
+				{ActionType: "restart_pod", Target: "local/" + incident.Service, Risk: "medium", RequiresApproval: true},
 			},
 		},
 		"Redis memory pressure causing cache degradation": {
 			Name:       "Redis memory pressure causing cache degradation",
-			Candidates: []Candidate{{ActionType: "clear_redis_keyspace", Target: "demo:pressure:*", Risk: "medium", RequiresApproval: true}},
+			Candidates: []Candidate{{ActionType: "purge_cache", Target: "demo:pressure:*", Parameters: map[string]any{"max_keys": 500}, Risk: "medium", RequiresApproval: true}},
 		},
 		"Nginx upstream misconfiguration or bad route rollout": {
 			Name: "Nginx upstream misconfiguration or bad route rollout",
@@ -214,13 +216,13 @@ func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Sign
 		},
 		"Downstream dependency latency dominates the request path": {
 			Name:       "Downstream dependency latency dominates the request path",
-			Candidates: []Candidate{{ActionType: "revert_feature_flag", Target: "optional-notifications", Risk: "medium", RequiresApproval: true}},
+			Candidates: []Candidate{{ActionType: "toggle_feature_flag", Target: "payments-api/optional-notifications", Parameters: map[string]any{"enabled": false}, Risk: "medium", RequiresApproval: true}},
 		},
 		"Bad config rollout introduced an invalid runtime configuration": {
 			Name: "Bad config rollout introduced an invalid runtime configuration",
 			Candidates: []Candidate{
 				{ActionType: "rollback_config", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-				{ActionType: "restart_service", Target: incident.Service, Risk: "medium", RequiresApproval: true},
+				{ActionType: "restart_pod", Target: "local/" + incident.Service, Risk: "medium", RequiresApproval: true},
 			},
 		},
 	}

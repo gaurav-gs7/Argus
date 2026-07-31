@@ -2,6 +2,8 @@
 
 Committed evidence snapshots live in [demo-evidence](demo-evidence/README.md). Live demo runs write fresh JSON snapshots under `artifacts/demo-evidence/<scenario>/`.
 
+`make demo-typed-remediations` exercises pod restart, connection-pool resize, feature-flag toggle, and cache purge through real OIDC identities, approval, JetStream delivery, worker execution, replay, and audit-chain verification.
+
 ## Topology Alert Storm
 
 - input: twenty alerts across Nginx, checkout, payments, and PostgreSQL
@@ -14,12 +16,12 @@ Committed evidence snapshots live in [demo-evidence](demo-evidence/README.md). L
 
 - symptom: high API latency and 5xx
 - evidence: connection timeouts and saturated pool
-- expected action: `drain_postgres_connections`, then `restart_service`
+- expected actions: `drain_postgres_connections`, bounded `resize_connection_pool`, or `restart_pod`
 
 ## Redis Memory Pressure
 
 - symptom: cache errors and latency
-- expected action: `clear_redis_keyspace`
+- expected action: bounded `purge_cache` for `demo:pressure:*`
 
 ## Nginx 5xx Spike
 
@@ -29,9 +31,9 @@ Committed evidence snapshots live in [demo-evidence](demo-evidence/README.md). L
 ## Dependency Latency
 
 - symptom: traces show downstream span dominance
-- expected action: `revert_feature_flag`
+- expected action: `toggle_feature_flag` to the explicit disabled state
 
 ## Bad Config Rollout
 
 - symptom: config event precedes parse or connection failures
-- expected action: `rollback_config`
+- expected action: `rollback_config`, then `restart_pod`
