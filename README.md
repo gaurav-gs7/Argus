@@ -1,5 +1,7 @@
 # Argus
 
+[![CI](https://github.com/gaurav-gs7/Argus/actions/workflows/ci.yml/badge.svg)](https://github.com/gaurav-gs7/Argus/actions/workflows/ci.yml)
+
 Argus is a production-style SRE control plane for incident detection, deterministic RCA, and safe policy-gated auto-remediation.
 
 It is designed to feel like an internal reliability platform rather than a generic AI log chatbot:
@@ -60,6 +62,33 @@ Observability signals -> Service graph -> Root incident -> Deterministic RCA
                                                               v
                                                     NATS / Helios executor
 ```
+
+## Test And Release Gate
+
+The CI badge is backed by executable checks, not a build-only workflow. `make test` runs every Go package for repository-wide statement coverage, then runs the named deterministic decision-core packages in a second profile. The command fails below either checked-in floor.
+
+```bash
+make test
+
+# Optional: retain profiles for local HTML inspection.
+ARGUS_COVERAGE_DIR=artifacts/coverage make test
+go tool cover -html=artifacts/coverage/decision-core.out
+```
+
+Current measured baselines are `27.3%` across all Go statements and `54.5%` across the decision core, with enforced floors of `25%` and `50%` respectively. The decision-core profile is not an unnamed exclusion list: [`scripts/check-go-coverage.sh`](scripts/check-go-coverage.sh) explicitly covers actions, OIDC authentication, configuration, correlation, policy, deterministic RCA, remediation contracts, topology, and typed workers.
+
+| Release check | What it proves | CI command/job |
+| --- | --- | --- |
+| Go tests and coverage | 89 named unit/integration test functions; both coverage floors must pass | `make test` |
+| Race detection | Concurrent Go tests are exercised under the race detector | `go test -race ./...` |
+| PostgreSQL and JetStream integration | Incident dedupe/topology grouping, audit integrity, durable queue delivery, and replay-safe control state use real disposable services | `make integration-test` |
+| Approval integration | Approval/expiry state and audit atomicity, Slack identity/reason binding, concurrent execution reservation, and publish rollback | `approval-integration` job |
+| OIDC and RBAC E2E | JWT signature, issuer/audience/role claims, viewer/operator/admin boundaries, and immutable actor identity against local Keycloak | `make oidc-test` |
+| AI adversarial tests | Eight prompt-injection, malformed tool output, candidate allow-list, Verdikt `PROPOSE_ONLY`, internal auth, and AI metric checks | `make ai-test` |
+| Deterministic RCA evaluation | Five scenario scores, replay stability, evidence dedupe, tie-breaks, topology bounds, and safe fallback arithmetic | `make rca-eval` |
+| Artifact and supply-chain checks | `go vet`, `govulncheck`, portable docs, Compose, Helm/Kustomize, Prometheus, Alertmanager, OPA, JSON/shell validation, and production image builds | `quality` job |
+
+Coverage is intentionally reported without disguising service-backed gaps. The repository-wide profile runs without PostgreSQL or NATS, so conditional database/queue integration bodies do not raise its percentage; those paths are instead required in dedicated CI jobs. A passing gate means the listed contracts ran and the measured coverage did not regress below the floors. It does not mean every production failure mode is tested; the remaining outage and crash-injection gaps are listed in [Threat Model And Explicit Limitations](docs/threat-model.md).
 
 ## Deterministic RCA Scoring
 

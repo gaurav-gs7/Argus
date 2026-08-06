@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test coverage integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -29,8 +29,10 @@ fmt:
 fmt-check:
 	test -z "$$(gofmt -l ./cmd ./internal ./demo/services)"
 
-test:
-	go test ./...
+test: coverage
+
+coverage:
+	./scripts/check-go-coverage.sh
 
 integration-test:
 	@set -eu; \

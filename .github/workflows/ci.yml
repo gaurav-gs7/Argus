@@ -27,6 +27,8 @@ jobs:
         run: go vet ./...
       - name: Run Go tests with race detector
         run: go test -race ./...
+      - name: Enforce Go coverage floors
+        run: make test
       - name: Evaluate deterministic RCA contract
         run: make rca-eval
       - name: Scan reachable Go vulnerabilities
