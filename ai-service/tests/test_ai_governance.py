@@ -11,7 +11,7 @@ from app.governance.verdikt import GovernanceDecision, GovernanceUnavailable, Ve
 from app.llm.base import GenerationResult
 from app.observability.metrics import AIMetrics, ObservedLLM
 from app.remediation.advisor import DeterministicCandidate, RemediationAdvisor
-from app.main import require_internal_token
+from app.main import RCASummarizeRequest, RemediationSuggestRequest, require_internal_token
 from app.safety.prompt_guard import sanitize_untrusted
 
 
@@ -64,6 +64,37 @@ class InternalAuthenticationTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as denied:
             require_internal_token(None)
         self.assertEqual(denied.exception.status_code, 401)
+
+
+class ControlPlaneContractTest(unittest.TestCase):
+    def test_rca_and_suggestion_requests_accept_topology_context(self) -> None:
+        topology = {
+            "root_service": "postgres",
+            "affected_services": ["payments-api", "postgres"],
+            "suppressed_alert_count": 4,
+        }
+        rca = RCASummarizeRequest(
+            incident={"id": "inc-42"},
+            primary_hypothesis="PostgreSQL connection pool exhaustion",
+            evidence=["pool saturation"],
+            confidence=0.9,
+            topology=topology,
+        )
+        suggestion = RemediationSuggestRequest(
+            incident={"id": "inc-42"},
+            deterministic_candidates=[{
+                "action_type": "resize_connection_pool",
+                "target": "postgres",
+                "parameters": {"size": 20},
+                "risk": "medium",
+                "requires_approval": True,
+            }],
+            confidence=0.9,
+            topology=topology,
+        )
+
+        self.assertEqual(rca.topology["root_service"], "postgres")
+        self.assertEqual(suggestion.topology["suppressed_alert_count"], 4)
 
 
 class VerdiktProtocolTest(unittest.IsolatedAsyncioTestCase):

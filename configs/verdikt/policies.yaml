@@ -1,0 +1,72 @@
+{
+  "allow_demo_boolean_approval": false,
+  "blocked_argument_patterns": [
+    "(^|/)\\.ssh(/|$)",
+    "(^|/)\\.aws(/|$)",
+    "(^|/)\\.env$",
+    "id_rsa",
+    "BEGIN [A-Z ]*PRIVATE KEY",
+    "\\bcurl\\b",
+    "\\bwget\\b"
+  ],
+  "forbidden_argument_keys": [
+    "access_token",
+    "authorization",
+    "bearer_token",
+    "oauth_token",
+    "upstream_token"
+  ],
+  "allowed_argument_values": {
+    "argus.propose_remediation": {
+      "action_type": [
+        "collect_diagnostics",
+        "restart_service",
+        "rollback_config",
+        "reload_nginx",
+        "clear_redis_keyspace",
+        "drain_postgres_connections",
+        "revert_feature_flag",
+        "restart_pod",
+        "resize_connection_pool",
+        "toggle_feature_flag",
+        "purge_cache"
+      ],
+      "risk": ["low", "medium"],
+      "dry_run": [true],
+      "advisory_only": [true]
+    }
+  },
+  "inbound_content_inspection": {
+    "mode": "fail_closed",
+    "max_scan_bytes": 262144
+  },
+  "redacted_key_patterns": [
+    "api[_-]?key",
+    "authorization",
+    "password",
+    "secret",
+    "token"
+  ],
+  "redacted_value_patterns": [
+    "sk-[A-Za-z0-9_-]{8,}",
+    "ghp_[A-Za-z0-9]{8,}",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+  ],
+  "approval_required": [],
+  "actor_permissions": {
+    "argus-ai-service": ["argus.propose_remediation"]
+  },
+  "actor_required_tools": ["argus.propose_remediation"],
+  "production_environments": ["prod", "production"],
+  "rollback_plan_required": [],
+  "dry_run_supported": [],
+  "shadow_mode_supported": [],
+  "rate_limits_per_minute": {
+    "default": 30,
+    "argus.propose_remediation": 30
+  },
+  "global_rate_limit_per_minute": 300,
+  "allowed_tools": {
+    "argus-ai": ["argus.propose_remediation"]
+  }
+}

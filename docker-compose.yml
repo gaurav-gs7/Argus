@@ -26,7 +26,7 @@ services:
     image: nats:2
     mem_limit: 128m
     cpus: 0.25
-    command: ["-js"]
+    command: ["-js", "-m", "8222"]
     ports:
       - "4222:4222"
       - "8222:8222"
@@ -144,10 +144,10 @@ services:
       context: ${VERDIKT_BUILD_CONTEXT:-../Verdikt}
       dockerfile: Dockerfile.argus
     environment:
-      VERDIKT_API_TOKEN: ${ARGUS_VERDIKT_API_TOKEN:-argus-verdikt-local}
-      VERDIKT_TELEMETRY: disabled
+      JUDIKT_API_TOKEN: ${ARGUS_VERDIKT_API_TOKEN:-argus-verdikt-local}
     volumes:
       - verdikt-data:/app/data
+      - ./configs/verdikt/policies.yaml:/app/config/policies.yaml:ro
     ports:
       - "8081:8080"
     healthcheck:

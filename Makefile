@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test coverage integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test coverage integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check terminal-demo-check ci reset demo-terminal demo-terminal-fast demo-terminal-replay demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -95,6 +95,10 @@ k8s-check: helm-check kustomize-check
 docs-check:
 	python3 scripts/check-portable-docs.py
 	python3 scripts/check-rca-evidence.py
+	python3 scripts/check-terminal-demo.py
+
+terminal-demo-check:
+	python3 scripts/check-terminal-demo.py
 
 lint: fmt-check vet docs-check
 
@@ -102,6 +106,15 @@ ci: lint test ai-test py-compile compose-check k8s-check
 
 reset:
 	./scripts/reset-local.sh
+
+demo-terminal:
+	python3 demo/terminal/presenter.py live --paced
+
+demo-terminal-fast:
+	python3 demo/terminal/presenter.py live --fast
+
+demo-terminal-replay:
+	python3 demo/terminal/presenter.py replay --speed 1
 
 demo-alert-storm:
 	./scripts/run-alert-storm-demo.sh

@@ -50,6 +50,7 @@ jobs:
       - name: Validate shell and JSON artifacts
         run: |
           bash -n scripts/*.sh
+          python -m json.tool configs/verdikt/policies.yaml >/dev/null
           python - <<'PY'
           import json
           from pathlib import Path
@@ -65,6 +66,8 @@ jobs:
                   json.load(handle)
           print(f"validated {len(paths)} JSON artifacts")
           PY
+      - name: Validate 150-second terminal evidence
+        run: make terminal-demo-check
       - name: Validate Prometheus and Alertmanager configs
         run: |
           docker run --rm --entrypoint /bin/promtool \

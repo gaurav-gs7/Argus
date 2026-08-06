@@ -61,6 +61,7 @@ class RCASummarizeRequest(StrictModel):
     primary_hypothesis: str = ""
     evidence: list[str] = Field(default_factory=list, max_length=200)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    topology: dict = Field(default_factory=dict)
 
 
 class RemediationExplainRequest(StrictModel):
@@ -75,6 +76,7 @@ class RemediationSuggestRequest(StrictModel):
     evidence: list[str] = Field(default_factory=list, max_length=200)
     deterministic_candidates: list[DeterministicCandidate] = Field(max_length=8)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    topology: dict = Field(default_factory=dict)
 
 
 class SearchRequest(StrictModel):

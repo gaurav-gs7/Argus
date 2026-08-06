@@ -1,6 +1,6 @@
 # Demo Evidence
 
-This directory contains committed reviewer-friendly snapshots for the five Argus demo scenarios. Live demo runs write fresh machine-local evidence under `artifacts/demo-evidence/<scenario>/` so committed docs do not churn.
+This directory contains committed reviewer-friendly snapshots for the five Argus demo scenarios and the complete 150-second terminal recording. Live demo runs write fresh machine-local evidence under `artifacts/` so committed docs do not churn.
 
 | Scenario | Evidence |
 | --- | --- |
@@ -12,6 +12,7 @@ This directory contains committed reviewer-friendly snapshots for the five Argus
 | AI governance with Verdikt | [ai-governance-verdikt.json](ai-governance-verdikt.json) |
 | Human approval workflow | [human-approval-workflow.json](human-approval-workflow.json) |
 | Topology alert storm | [topology-alert-storm.json](topology-alert-storm.json) |
+| Live incident-to-remediation session | [argus-terminal-demo.cast](argus-terminal-demo.cast) |
 
 Regenerate live evidence locally:
 
