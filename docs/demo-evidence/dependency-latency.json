@@ -10,25 +10,47 @@
     {
       "type": "correlated_evidence",
       "summary": "downstream dependency latency dominates the request path",
-      "confidence": 0.76
+      "confidence": 0.84
     },
     {
       "type": "correlated_evidence",
       "summary": "p95 latency increased before failure rate dominated",
-      "confidence": 0.76
+      "confidence": 0.77
     }
   ],
   "rca": {
     "primary_hypothesis": "Downstream dependency latency dominates the request path",
-    "confidence": 0.76,
+    "confidence": 0.7406,
     "evidence": [
       "downstream dependency latency dominates the request path",
       "p95 latency increased before failure rate dominated"
-    ]
+    ],
+    "score_breakdown": {
+      "baseline": 0.35,
+      "items": [
+        {
+          "rule_id": "dependency_latency",
+          "type": "trace_anomaly",
+          "confidence": 0.84,
+          "weight": 0.3,
+          "contribution": 0.252
+        },
+        {
+          "rule_id": "dependency_latency",
+          "type": "metric_anomaly",
+          "confidence": 0.77,
+          "weight": 0.18,
+          "contribution": 0.1386
+        }
+      ],
+      "evidence_score": 0.3906,
+      "final_confidence": 0.7406,
+      "capped": false
+    }
   },
   "remediations": [
     {
-      "action_type": "revert_feature_flag",
+      "action_type": "toggle_feature_flag",
       "risk": "medium",
       "status": "awaiting_approval",
       "requires_approval": true,

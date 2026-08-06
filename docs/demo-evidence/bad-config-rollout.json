@@ -10,7 +10,7 @@
     {
       "type": "correlated_evidence",
       "summary": "configuration rollout preceded service errors",
-      "confidence": 0.85
+      "confidence": 0.93
     },
     {
       "type": "correlated_evidence",
@@ -20,11 +20,33 @@
   ],
   "rca": {
     "primary_hypothesis": "Bad config rollout introduced an invalid runtime configuration",
-    "confidence": 0.85,
+    "confidence": 0.8795,
     "evidence": [
       "configuration rollout preceded service errors",
       "runtime logs contain config or connection errors"
-    ]
+    ],
+    "score_breakdown": {
+      "baseline": 0.35,
+      "items": [
+        {
+          "rule_id": "bad_config_rollout",
+          "type": "config_event",
+          "confidence": 0.93,
+          "weight": 0.35,
+          "contribution": 0.3255
+        },
+        {
+          "rule_id": "bad_config_rollout",
+          "type": "log_pattern",
+          "confidence": 0.85,
+          "weight": 0.24,
+          "contribution": 0.204
+        }
+      ],
+      "evidence_score": 0.5295,
+      "final_confidence": 0.8795,
+      "capped": false
+    }
   },
   "remediations": [
     {
@@ -35,7 +57,7 @@
       "policy_reason": "Medium risk remediation requires approval"
     },
     {
-      "action_type": "restart_service",
+      "action_type": "restart_pod",
       "risk": "medium",
       "status": "awaiting_approval",
       "requires_approval": true,

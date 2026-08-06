@@ -9,22 +9,44 @@
   "timeline": [
     {
       "type": "correlated_evidence",
-      "summary": "edge layer is returning elevated 5xx",
-      "confidence": 0.8
+      "summary": "edge layer is returning elevated 5xx while upstream health is isolated",
+      "confidence": 0.89
     },
     {
       "type": "correlated_evidence",
       "summary": "nginx route or upstream config changed near the incident window",
-      "confidence": 0.8
+      "confidence": 0.76
     }
   ],
   "rca": {
     "primary_hypothesis": "Nginx upstream misconfiguration or bad route rollout",
-    "confidence": 0.8,
+    "confidence": 0.769,
     "evidence": [
-      "edge layer is returning elevated 5xx",
+      "edge layer is returning elevated 5xx while upstream health is isolated",
       "nginx route or upstream config changed near the incident window"
-    ]
+    ],
+    "score_breakdown": {
+      "baseline": 0.35,
+      "items": [
+        {
+          "rule_id": "nginx_upstream_config",
+          "type": "edge_anomaly",
+          "confidence": 0.89,
+          "weight": 0.3,
+          "contribution": 0.267
+        },
+        {
+          "rule_id": "nginx_upstream_config",
+          "type": "config_event",
+          "confidence": 0.76,
+          "weight": 0.2,
+          "contribution": 0.152
+        }
+      ],
+      "evidence_score": 0.419,
+      "final_confidence": 0.769,
+      "capped": false
+    }
   },
   "remediations": [
     {

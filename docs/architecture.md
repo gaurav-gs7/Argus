@@ -37,6 +37,8 @@ The correctness path does not depend on an LLM:
 12. Execute through registered handlers using a durable idempotency receipt
 13. Append every state change to the serialized SHA-256 audit hash chain
 
+RCA evidence uses explicit rule IDs and fixed `confidence x weight` contributions with bounded topology adjustments. The complete formula, coverage matrix, fallbacks, verification tests, and limitations are documented in [Deterministic RCA Scoring](rca-scoring.md).
+
 ## Topology Correlation
 
 `service_dependencies` stores directed `service -> depends_on` edges with dependency type and criticality. The correlator performs cycle-safe breadth-first graph walks and uses deterministic tie-breaking:

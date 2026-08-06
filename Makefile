@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check ci reset demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -51,6 +51,12 @@ ai-test:
 ai-test-local:
 	PYTHONPATH=ai-service python3 -m unittest discover -s ai-service/tests -v
 
+rca-eval:
+	go test -count=1 -v \
+		-run 'TestDeterministicRCAScenarioScores|TestDeterministicRCAReplayStable|TestBestHypothesisBreaksEqualScoresLexically|TestBuildDeterministicRCAFallsBackToDiagnostics|TestEnrichWithObservedTopologyRaisesConfidenceAndExplainsBlastRadius|TestEnrichWithInferredTopologyDoesNotInflateConfidence|TestTopologyFallbackNamesFailureDomainWithoutInventingFailureMode|TestCorrelateDeduplicatesRepeatedEvidence' \
+		./internal/correlation ./internal/rca
+	python3 scripts/check-rca-evidence.py
+
 vet:
 	go vet ./...
 
@@ -86,6 +92,7 @@ k8s-check: helm-check kustomize-check
 
 docs-check:
 	python3 scripts/check-portable-docs.py
+	python3 scripts/check-rca-evidence.py
 
 lint: fmt-check vet docs-check
 

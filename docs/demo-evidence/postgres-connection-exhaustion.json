@@ -10,21 +10,56 @@
     {
       "type": "correlated_evidence",
       "summary": "postgres connection pool saturation crossed threshold",
-      "confidence": 0.88
+      "confidence": 0.91
     },
     {
       "type": "correlated_evidence",
       "summary": "application logs indicate postgres connection acquisition timeout",
-      "confidence": 0.88
+      "confidence": 0.87
+    },
+    {
+      "type": "correlated_evidence",
+      "summary": "payments-api error rate increased during the incident window",
+      "confidence": 0.82
     }
   ],
   "rca": {
     "primary_hypothesis": "PostgreSQL connection pool exhaustion",
-    "confidence": 0.88,
+    "confidence": 0.95,
     "evidence": [
       "postgres connection pool saturation crossed threshold",
-      "application logs indicate postgres connection acquisition timeout"
-    ]
+      "application logs indicate postgres connection acquisition timeout",
+      "payments-api error rate increased during the incident window"
+    ],
+    "score_breakdown": {
+      "baseline": 0.35,
+      "items": [
+        {
+          "rule_id": "postgres_connection_exhaustion",
+          "type": "metric_anomaly",
+          "confidence": 0.91,
+          "weight": 0.34,
+          "contribution": 0.3094
+        },
+        {
+          "rule_id": "postgres_connection_exhaustion",
+          "type": "log_pattern",
+          "confidence": 0.87,
+          "weight": 0.29,
+          "contribution": 0.2523
+        },
+        {
+          "rule_id": "postgres_connection_exhaustion",
+          "type": "service_impact",
+          "confidence": 0.82,
+          "weight": 0.17,
+          "contribution": 0.1394
+        }
+      ],
+      "evidence_score": 0.7011,
+      "final_confidence": 0.95,
+      "capped": true
+    }
   },
   "remediations": [
     {
@@ -35,7 +70,14 @@
       "policy_reason": "Medium risk remediation requires approval"
     },
     {
-      "action_type": "restart_service",
+      "action_type": "resize_connection_pool",
+      "risk": "medium",
+      "status": "awaiting_approval",
+      "requires_approval": true,
+      "policy_reason": "Medium risk remediation requires approval"
+    },
+    {
+      "action_type": "restart_pod",
       "risk": "medium",
       "status": "awaiting_approval",
       "requires_approval": true,

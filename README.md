@@ -61,6 +61,94 @@ Observability signals -> Service graph -> Root incident -> Deterministic RCA
                                                     NATS / Helios executor
 ```
 
+## Deterministic RCA Scoring
+
+Argus is rule-based; "deterministic" means the same persisted signals and topology always produce the same evidence, arithmetic, winner, and fallback without an LLM or random sampling. The correlator assigns explicit rule IDs, deduplicates evidence by `rule_id + type + source + summary`, and scores each hypothesis with:
+
+```text
+evidence_score = sum(evidence_confidence * evidence_weight)
+final_confidence = clamp(0.35 + evidence_score, 0.35, 0.95)
+```
+
+| Rule | Normalized signal match | Evidence arithmetic | No-topology result |
+| --- | --- | --- | --- |
+| PostgreSQL exhaustion | `postgres` AND `connection` | `0.91x0.34 + 0.87x0.29 + 0.82x0.17` | `0.95` (capped) |
+| Redis pressure | `redis` AND `memory` | `0.86x0.31 + 0.82x0.22` | `0.7970` |
+| Nginx upstream/config | `nginx` AND `5xx` | `0.89x0.30 + 0.76x0.20` | `0.7690` |
+| Dependency latency | `notification` OR `latency` | `0.84x0.30 + 0.77x0.18` | `0.7406` |
+| Bad config rollout | `config` OR `parse` OR `rollout` | `0.93x0.35 + 0.85x0.24` | `0.8795` |
+
+An observed topology root adds `0.03`, still capped at `0.95`; an inferred root adds nothing. If signal rules do not identify a failure mode, topology-only evidence yields `0.72` for an observed root or `0.58` for an inferred root and permits diagnostics only. With neither signal nor topology evidence, Argus returns `0.35` and `collect_diagnostics`. Equal hypothesis scores use lexical name ordering.
+
+Each RCA report includes the individual `confidence x weight = contribution` factors. The full [scoring specification and trust boundary](docs/rca-scoring.md), [table-driven score tests](internal/rca/service_test.go), and [committed scenario evidence](docs/demo-evidence/README.md) make these claims reproducible. These values are operational heuristics, not statistical probabilities, and the current v1 text classifier does not independently attest that a canonical metric/log/trace came from its named backend.
+
+### Worked Evidence Chain
+
+For `PaymentsAPIPostgresConnectionExhaustion` with a `postgres connection acquisition timeout` annotation:
+
+```text
+persisted signal
+  -> normalized name + source + type + JSON body
+  -> rule_id: postgres_connection_exhaustion
+  -> pool saturation:    0.91 x 0.34 = 0.3094
+  -> acquisition timeout: 0.87 x 0.29 = 0.2523
+  -> service impact:      0.82 x 0.17 = 0.1394
+  -> evidence_score: 0.7011
+  -> clamp(0.35 + 0.7011, 0.35, 0.95) = 0.9500
+  -> typed candidates: drain connections, resize pool, restart pod
+  -> Go policy + human approval; never direct LLM execution
+```
+
+Representative stored RCA output:
+
+```json
+{
+  "primary_hypothesis": "PostgreSQL connection pool exhaustion",
+  "confidence": 0.95,
+  "model_backend": "deterministic",
+  "evidence": [
+    "postgres connection pool saturation crossed threshold",
+    "application logs indicate postgres connection acquisition timeout",
+    "payments-api error rate increased during the incident window"
+  ],
+  "contributing_factors": [
+    "metric_anomaly from prometheus (confidence 0.91 x weight 0.34 = 0.3094)",
+    "log_pattern from loki (confidence 0.87 x weight 0.29 = 0.2523)",
+    "service_impact from alertmanager (confidence 0.82 x weight 0.17 = 0.1394)"
+  ]
+}
+```
+
+### Trust And Decision Authority
+
+| Input or component | Trust boundary | Can affect RCA? | Can execute remediation? |
+| --- | --- | --- | --- |
+| Alert names, annotations, log text | Untrusted/operator-influenced | Yes, only through fixed predicates and bounded weights | No |
+| Service dependency graph | Operator-managed durable state | Root selection; observed root adds at most `0.03` | No |
+| Compiled Go rule table | Trusted correctness path, reviewed in CI | Defines rule IDs, weights, caps, ties, and typed candidates | No |
+| LLM and Verdikt proposal path | External advisory/governance dependencies; malformed or unavailable responses fail closed | Cannot change evidence, score, target, or parameters | No |
+| Go policy, OIDC identity, approval, worker | Authoritative execution path | Does not rewrite RCA | Yes, through registered handlers only |
+
+### Reproducible Evaluation
+
+```bash
+make rca-eval
+```
+
+Current checked output:
+
+```text
+postgres   confidence=0.9500
+redis      confidence=0.7970
+nginx      confidence=0.7690
+dependency confidence=0.7406
+config     confidence=0.8795
+100/100 deterministic replays identical
+Validated deterministic RCA arithmetic for 5 scenarios.
+```
+
+The harness also verifies duplicate-evidence suppression, lexical score ties, unknown-signal fallback, observed/inferred topology bounds, and the rule that topology may identify a failure domain but cannot invent a component failure mode. CI runs it as the named `Evaluate deterministic RCA contract` step.
+
 ## Quick Start
 
 `make up` bootstraps Verdikt beside Argus when needed. Compose uses only a relative, overridable build context and has no machine-specific imports.
@@ -227,7 +315,7 @@ This repository includes:
 - CI-validated Helm and Kustomize packaging for an undeployed production stretch path
 - docs, ADRs, migrations, scripts, committed demo evidence, dashboards, alerts, and CI checks
 
-See [docs/architecture.md](docs/architecture.md), [docs/kubernetes.md](docs/kubernetes.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
+See [docs/architecture.md](docs/architecture.md), [docs/rca-scoring.md](docs/rca-scoring.md), [docs/kubernetes.md](docs/kubernetes.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
 
 ## License
 

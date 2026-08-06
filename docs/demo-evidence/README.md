@@ -22,4 +22,4 @@ make demo-alert-storm
 make demo-postgres-exhaustion
 ```
 
-The snapshots show the intended evidence shape: root incident metadata, topology and correlated timeline, deterministic RCA, policy-gated remediation proposal, identity-bound approval, and safety notes.
+The snapshots show the intended evidence shape: root incident metadata, topology and correlated timeline, deterministic RCA, policy-gated remediation proposal, identity-bound approval, and safety notes. Their RCA confidence values match the exact table-driven expectations in `internal/rca/service_test.go`; see the [scoring specification](../rca-scoring.md) for each multiplication and fallback bound.

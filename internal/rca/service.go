@@ -194,8 +194,8 @@ func enrichWithTopology(
 
 func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Signal) (summary, hypothesis string, confidence float64, evidence []string, factors []string, candidates []Candidate) {
 	correlated := correlation.New().Correlate(incident, signals)
-	hypotheses := map[string]*scoredHypothesis{
-		"PostgreSQL connection pool exhaustion": {
+	hypotheses := map[correlation.RuleID]*scoredHypothesis{
+		correlation.RulePostgresConnectionExhaustion: {
 			Name: "PostgreSQL connection pool exhaustion",
 			Candidates: []Candidate{
 				{ActionType: "drain_postgres_connections", Target: incident.Service, Risk: "medium", RequiresApproval: true},
@@ -203,22 +203,22 @@ func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Sign
 				{ActionType: "restart_pod", Target: "local/" + incident.Service, Risk: "medium", RequiresApproval: true},
 			},
 		},
-		"Redis memory pressure causing cache degradation": {
+		correlation.RuleRedisMemoryPressure: {
 			Name:       "Redis memory pressure causing cache degradation",
 			Candidates: []Candidate{{ActionType: "purge_cache", Target: "demo:pressure:*", Parameters: map[string]any{"max_keys": 500}, Risk: "medium", RequiresApproval: true}},
 		},
-		"Nginx upstream misconfiguration or bad route rollout": {
+		correlation.RuleNginxUpstreamConfig: {
 			Name: "Nginx upstream misconfiguration or bad route rollout",
 			Candidates: []Candidate{
 				{ActionType: "rollback_config", Target: "nginx", Risk: "medium", RequiresApproval: true},
 				{ActionType: "reload_nginx", Target: "nginx", Risk: "medium", RequiresApproval: true},
 			},
 		},
-		"Downstream dependency latency dominates the request path": {
+		correlation.RuleDependencyLatency: {
 			Name:       "Downstream dependency latency dominates the request path",
 			Candidates: []Candidate{{ActionType: "toggle_feature_flag", Target: "payments-api/optional-notifications", Parameters: map[string]any{"enabled": false}, Risk: "medium", RequiresApproval: true}},
 		},
-		"Bad config rollout introduced an invalid runtime configuration": {
+		correlation.RuleBadConfigRollout: {
 			Name: "Bad config rollout introduced an invalid runtime configuration",
 			Candidates: []Candidate{
 				{ActionType: "rollback_config", Target: incident.Service, Risk: "medium", RequiresApproval: true},
@@ -228,19 +228,7 @@ func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Sign
 	}
 
 	for _, item := range correlated.Evidence {
-		summaryText := strings.ToLower(item.Summary)
-		switch {
-		case strings.Contains(summaryText, "postgres") || strings.Contains(summaryText, "connection acquisition"):
-			addScore(hypotheses["PostgreSQL connection pool exhaustion"], item)
-		case strings.Contains(summaryText, "redis") || strings.Contains(summaryText, "cache"):
-			addScore(hypotheses["Redis memory pressure causing cache degradation"], item)
-		case strings.Contains(summaryText, "nginx") || strings.Contains(summaryText, "edge layer") || strings.Contains(summaryText, "upstream"):
-			addScore(hypotheses["Nginx upstream misconfiguration or bad route rollout"], item)
-		case strings.Contains(summaryText, "dependency") || strings.Contains(summaryText, "latency") || strings.Contains(summaryText, "notification"):
-			addScore(hypotheses["Downstream dependency latency dominates the request path"], item)
-		case strings.Contains(summaryText, "config") || strings.Contains(summaryText, "rollout"):
-			addScore(hypotheses["Bad config rollout introduced an invalid runtime configuration"], item)
-		}
+		addScore(hypotheses[item.RuleID], item)
 	}
 
 	best := bestHypothesis(hypotheses)
@@ -258,7 +246,10 @@ func buildDeterministicRCA(incident incidents.Incident, signals []incidents.Sign
 	factors = appendEvidence(nil, best.Factors...)
 	hypothesis = best.Name
 	candidates = best.Candidates
-	summary = fmt.Sprintf("%s likely impacted %s. Deterministic evidence score %.2f points to %s.", incident.Title, incident.Service, confidence, hypothesis)
+	summary = fmt.Sprintf(
+		"%s likely impacted %s. Deterministic confidence %.4f = clamp(0.35 baseline + %.4f evidence score), pointing to %s.",
+		incident.Title, incident.Service, confidence, best.Score, hypothesis,
+	)
 	return summary, hypothesis, confidence, evidence, factors, candidates
 }
 
@@ -268,15 +259,23 @@ func addScore(h *scoredHypothesis, item correlation.EvidenceItem) {
 	}
 	h.Score += item.Weight * item.Confidence
 	h.Evidence = appendEvidence(h.Evidence, item.Summary)
-	h.Factors = appendEvidence(h.Factors, item.Type+" from "+item.Source)
+	h.Factors = appendEvidence(h.Factors, fmt.Sprintf(
+		"%s from %s (confidence %.2f x weight %.2f = %.4f)",
+		item.Type, item.Source, item.Confidence, item.Weight, item.Confidence*item.Weight,
+	))
 }
 
-func bestHypothesis(items map[string]*scoredHypothesis) *scoredHypothesis {
+func bestHypothesis(items map[correlation.RuleID]*scoredHypothesis) *scoredHypothesis {
 	ordered := make([]*scoredHypothesis, 0, len(items))
 	for _, item := range items {
 		ordered = append(ordered, item)
 	}
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Score > ordered[j].Score })
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Score == ordered[j].Score {
+			return ordered[i].Name < ordered[j].Name
+		}
+		return ordered[i].Score > ordered[j].Score
+	})
 	if len(ordered) == 0 {
 		return nil
 	}

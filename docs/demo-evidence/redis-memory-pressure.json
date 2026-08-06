@@ -10,25 +10,47 @@
     {
       "type": "correlated_evidence",
       "summary": "redis memory pressure signal crossed threshold",
-      "confidence": 0.83
+      "confidence": 0.86
     },
     {
       "type": "correlated_evidence",
       "summary": "cache errors increased during the incident window",
-      "confidence": 0.83
+      "confidence": 0.82
     }
   ],
   "rca": {
     "primary_hypothesis": "Redis memory pressure causing cache degradation",
-    "confidence": 0.83,
+    "confidence": 0.797,
     "evidence": [
       "redis memory pressure signal crossed threshold",
       "cache errors increased during the incident window"
-    ]
+    ],
+    "score_breakdown": {
+      "baseline": 0.35,
+      "items": [
+        {
+          "rule_id": "redis_memory_pressure",
+          "type": "metric_anomaly",
+          "confidence": 0.86,
+          "weight": 0.31,
+          "contribution": 0.2666
+        },
+        {
+          "rule_id": "redis_memory_pressure",
+          "type": "service_impact",
+          "confidence": 0.82,
+          "weight": 0.22,
+          "contribution": 0.1804
+        }
+      ],
+      "evidence_score": 0.447,
+      "final_confidence": 0.797,
+      "capped": false
+    }
   },
   "remediations": [
     {
-      "action_type": "clear_redis_keyspace",
+      "action_type": "purge_cache",
       "risk": "medium",
       "status": "awaiting_approval",
       "requires_approval": true,
