@@ -14,6 +14,10 @@ It is designed to feel like an internal reliability platform rather than a gener
 - remediations are typed, idempotent, policy-gated, and recorded in a tamper-evident audit ledger
 - medium-risk actions enter a durable, identity-bound human approval workflow
 
+## Why This Isn't A Log Chatbot
+
+An LLM agent that owns RCA must infer causality from incomplete, attacker-influenceable telemetry; its conclusion can change between runs, invent evidence, group symptoms incorrectly, and leave no reproducible decision path before invoking a tool. Argus instead normalizes and stores every signal, correlates incidents through a persisted service graph, ranks hypotheses with fixed evidence rules and inspectable arithmetic, and permits only typed actions through deterministic policy, idempotency, and identity-bound approval. The LLM receives bounded structured evidence only after that work, so it can summarize or explain a recommendation but cannot alter the evidence, score, policy decision, approval, or execution; if the model is unavailable or returns invalid output, the deterministic incident pipeline still works.
+
 ## Why This Stack
 
 This repository is intentionally optimized for local development on a MacBook Air M2 with 8 GB RAM:
