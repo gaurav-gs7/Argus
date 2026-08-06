@@ -4,7 +4,7 @@
 
 Runtime behavior is shown as runtime behavior. API input, backend processing, PostgreSQL state, JetStream delivery, worker output, policy decisions, audit verification, and metrics appear as actual terminal commands and responses. ASCII flowcharts are used only to explain transitions between those operations. There are no rendered dashboard screenshots or fabricated command outputs in the capture.
 
-The committed capture is an Asciinema v2 terminal stream generated from the real local Compose stack. Argus includes a Python standard-library replay path, so viewing it does not require Asciinema, a browser, a paid recorder, or a running Argus environment.
+The committed capture is an Asciinema v2 terminal stream generated from the real local Compose stack. The same evidence is rendered as [`docs/assets/argus-demo.gif`](assets/argus-demo.gif), a looping `1280x720` recording that plays directly on GitHub. Argus also includes a Python standard-library cast replay path, so viewing the raw session does not require Asciinema, a browser, a paid recorder, or a running Argus environment.
 
 ## Experience The Recorded Demo
 
@@ -39,6 +39,15 @@ For a real backend run without presentation waits:
 ```bash
 make demo-terminal-fast
 ```
+
+To regenerate the GitHub recording from the committed cast:
+
+```bash
+python3 -m pip install -r requirements-media.txt
+make demo-terminal-gif
+```
+
+The GIF renderer does not invent commands or output. It reconstructs terminal screen states from the cast, preserves its event timing, and fails unless the source spans exactly 150 seconds.
 
 ## Exact 150-Second Timeline
 
@@ -95,5 +104,6 @@ hash-chain verification + Prometheus evidence
 - runtime-generated incident and remediation IDs
 - correlation, RCA, AI governance, approval, execution, replay, JetStream, audit, and metric proof markers
 - no bearer JWT, local absolute path, demo client secret, or failed-run marker
+- a looping `1280x720` GIF with the same exact 150-second duration
 
 The cast is evidence of one successful local run, not a substitute for tests. CI independently runs race detection, coverage gates, disposable PostgreSQL/JetStream integration, OIDC E2E, adversarial AI tests, deterministic RCA evaluation, and artifact validation.

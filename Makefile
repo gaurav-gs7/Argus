@@ -3,7 +3,7 @@ APP_NAME := argus
 export COMPOSE_DOCKER_CLI_BUILD=1
 export DOCKER_BUILDKIT=1
 
-.PHONY: bootstrap up down full-up logs seed test coverage integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check terminal-demo-check ci reset demo-terminal demo-terminal-fast demo-terminal-replay demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
+.PHONY: bootstrap up down full-up logs seed test coverage integration-test oidc-test ai-test ai-test-local rca-eval lint fmt fmt-check vet py-compile compose-check helm-check kustomize-check k8s-check docs-check terminal-demo-check ci reset demo-terminal demo-terminal-fast demo-terminal-replay demo-terminal-gif demo-alert-storm demo-typed-remediations demo-postgres-exhaustion demo-redis-pressure demo-nginx-5xx demo-dependency-latency demo-bad-config
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -115,6 +115,9 @@ demo-terminal-fast:
 
 demo-terminal-replay:
 	python3 demo/terminal/presenter.py replay --speed 1
+
+demo-terminal-gif:
+	python3 scripts/render-terminal-demo.py
 
 demo-alert-storm:
 	./scripts/run-alert-storm-demo.sh

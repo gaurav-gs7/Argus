@@ -13,6 +13,7 @@ This directory contains committed reviewer-friendly snapshots for the five Argus
 | Human approval workflow | [human-approval-workflow.json](human-approval-workflow.json) |
 | Topology alert storm | [topology-alert-storm.json](topology-alert-storm.json) |
 | Live incident-to-remediation session | [argus-terminal-demo.cast](argus-terminal-demo.cast) |
+| GitHub-ready terminal recording | [argus-demo.gif](../assets/argus-demo.gif) |
 
 Regenerate live evidence locally:
 

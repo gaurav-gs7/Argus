@@ -4,6 +4,8 @@
 
 Argus is a production-style SRE control plane for incident detection, deterministic RCA, and safe policy-gated auto-remediation.
 
+![Argus 150-second terminal demo showing real alert ingestion, topology correlation, deterministic RCA, governed AI advice, human approval, typed remediation, idempotency, and audit verification](docs/assets/argus-demo.gif)
+
 It is designed to feel like an internal reliability platform rather than a generic AI log chatbot:
 
 - incidents are created from observability signals
@@ -94,7 +96,7 @@ Current measured baselines are `27.3%` across all Go statements and `54.5%` acro
 | OIDC and RBAC E2E | JWT signature, issuer/audience/role claims, viewer/operator/admin boundaries, and immutable actor identity against local Keycloak | `make oidc-test` |
 | AI adversarial tests | Nine prompt-injection, malformed tool output, candidate allow-list, topology contract, Verdikt `PROPOSE_ONLY`, internal auth, and AI metric checks | `make ai-test` |
 | Deterministic RCA evaluation | Five scenario scores, replay stability, evidence dedupe, tie-breaks, topology bounds, and safe fallback arithmetic | `make rca-eval` |
-| Terminal demo evidence | The committed 13-scene cast is exactly 150 seconds, contains every runtime proof marker, and leaks no token or local path | `make terminal-demo-check` |
+| Terminal demo evidence | The committed 13-scene cast and looping `1280x720` GIF are exactly 150 seconds, contain every runtime proof marker, and leak no token or local path | `make terminal-demo-check` |
 | Artifact and supply-chain checks | `go vet`, `govulncheck`, portable docs, Compose, Helm/Kustomize, Prometheus, Alertmanager, OPA, JSON/shell validation, and production image builds | `quality` job |
 
 Coverage is intentionally reported without disguising service-backed gaps. The repository-wide profile runs without PostgreSQL or NATS, so conditional database/queue integration bodies do not raise its percentage; those paths are instead required in dedicated CI jobs. A passing gate means the listed contracts ran and the measured coverage did not regress below the floors. It does not mean every production failure mode is tested; the remaining outage and crash-injection gaps are listed in [Threat Model And Explicit Limitations](docs/threat-model.md).

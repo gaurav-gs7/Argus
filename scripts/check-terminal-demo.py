@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import struct
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CAST_PATH = ROOT / "docs" / "demo-evidence" / "argus-terminal-demo.cast"
+GIF_PATH = ROOT / "docs" / "assets" / "argus-demo.gif"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -89,9 +91,34 @@ def main() -> None:
     if leaked:
         fail("capture contains forbidden material: " + ", ".join(leaked))
 
+    if not GIF_PATH.is_file():
+        fail(f"missing GitHub recording {GIF_PATH.relative_to(ROOT)}")
+    gif = GIF_PATH.read_bytes()
+    if not gif.startswith(b"GIF89a"):
+        fail("terminal recording is not a GIF89a animation")
+    if len(gif) < 10:
+        fail("terminal recording is truncated")
+    width, height = struct.unpack("<HH", gif[6:10])
+    if (width, height) != (1280, 720):
+        fail(f"terminal recording is {width}x{height}, expected 1280x720")
+    frame_markers = [match.start() for match in re.finditer(b"\x21\xf9\x04", gif)]
+    if len(frame_markers) < 40:
+        fail(f"terminal recording has only {len(frame_markers)} frames")
+    gif_duration_ms = sum(
+        struct.unpack("<H", gif[offset + 4 : offset + 6])[0] * 10
+        for offset in frame_markers
+    )
+    if gif_duration_ms != 150_000:
+        fail(
+            f"terminal recording duration is {gif_duration_ms / 1000:.3f}s, "
+            "expected 150s"
+        )
+    if b"NETSCAPE2.0" not in gif:
+        fail("terminal recording is not configured to loop")
+
     print(
         f"Validated 150-second terminal demo: {len(events)} output events, "
-        f"13 scenes, duration {duration:.3f}s."
+        f"13 scenes, {len(frame_markers)} GIF frames, duration {duration:.3f}s."
     )
 
 
