@@ -35,6 +35,37 @@ Core endpoints:
 - `GET /v1/runbooks`
 - `POST /v1/runbooks/reindex`
 
+## Judikt Finding Contract
+
+Judikt's finding outbox uses `POST /v1/alerts/alertmanager`. It does not call `POST /v1/incidents`; using the normal alert ingress ensures security findings receive the same normalization, grouping, topology, signal, timeline, audit, and deterministic RCA treatment as operational alerts.
+
+The request requires `Authorization: Bearer <OIDC access token>`. The token's mapped Argus role must include `ingest_signal` (`operator` or `admin` in v1). Judikt places its dedupe key in `alerts[0].fingerprint`, maps risk to Argus severity, labels the source as `judikt`, and forwards hashes instead of caller arguments, model/tool results, tokens, or raw injected text. See the committed [producer-shaped payload](../demo/alerts/judikt_security_finding.json).
+
+Argus responds with `202 Accepted` and the normal ingestion envelope:
+
+```json
+{
+  "incidents": [
+    {
+      "id": "inc_example",
+      "service": "mcp-platform-ops",
+      "severity": "sev2",
+      "status": "detected"
+    }
+  ],
+  "correlation": {
+    "alert_count": 1,
+    "incident_groups": 1,
+    "affected_service_count": 1,
+    "observed_roots": 1,
+    "inferred_roots": 0,
+    "suppressed_alert_count": 0
+  }
+}
+```
+
+An outbox retry with the same fingerprint and within the grouping window returns the existing incident ID while appending another signal and timeline event. RCA generation is explicit: call `POST /v1/incidents/{incident_id}/rca/generate` using an identity with `generate_rca`. See [Judikt Finding Ingestion](integrations/judikt.md) for setup, field mapping, security boundaries, and integration evidence.
+
 Approval decision body:
 
 ```json

@@ -57,6 +57,7 @@ jobs:
           paths = [
               *Path("configs/grafana/dashboards").glob("*.json"),
               *Path("configs/keycloak").glob("*.json"),
+              *Path("demo/alerts").glob("*.json"),
               *Path("docs/demo-evidence").glob("*.json"),
           ]
           for path in paths:

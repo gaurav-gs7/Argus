@@ -1,0 +1,44 @@
+{
+  "status": "firing",
+  "receiver": "judikt",
+  "groupLabels": {
+    "alertname": "JudiktMCPSecurityFinding",
+    "service": "mcp-platform-ops"
+  },
+  "commonLabels": {
+    "alertname": "JudiktMCPSecurityFinding",
+    "service": "mcp-platform-ops",
+    "environment": "production",
+    "severity": "sev2",
+    "source": "judikt",
+    "rule": "blocked_pattern"
+  },
+  "commonAnnotations": {
+    "summary": "Judikt security finding: platform.run_diagnostic blocked by blocked_pattern"
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "JudiktMCPSecurityFinding",
+        "service": "mcp-platform-ops",
+        "environment": "production",
+        "severity": "sev2",
+        "source": "judikt",
+        "rule": "blocked_pattern"
+      },
+      "annotations": {
+        "summary": "Judikt security finding: platform.run_diagnostic blocked by blocked_pattern",
+        "correlation_id": "corr-42",
+        "tool": "platform.run_diagnostic",
+        "risk_score": "75",
+        "action": "DENY",
+        "arguments_hash": "f49c497cf6fc90ce0a775f9dc87c71ca8b2d7815494b92582c1ad2a47a6eada8",
+        "result_hash": "4755bd1b6d6e9fd5cf80fdf0ab99cfe4036867557ea8e3b3523742328a9d8b18"
+      },
+      "startsAt": "2026-08-06T12:00:00Z",
+      "fingerprint": "5b4f34c54ffbf467e5287a66b74c8ab60d86859524db37c98c42f98d2dc04a2f",
+      "generatorURL": ""
+    }
+  ]
+}

@@ -2,8 +2,11 @@ package incidents_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +126,109 @@ func TestAlertIngestionPersistsAndGroupsIncident(t *testing.T) {
 	}
 	if !foundAudit {
 		t.Fatalf("expected incident.detected audit entry for %s, got %#v", first[0].ID, auditEntries)
+	}
+}
+
+func TestJudiktFindingOutboxCreatesDeduplicatedIncident(t *testing.T) {
+	dsn := os.Getenv("ARGUS_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_TEST_POSTGRES_DSN is not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+	if _, err := database.ExecContext(ctx, `
+		TRUNCATE incident_timeline_events, signals, incidents, service_dependencies, services CASCADE
+	`); err != nil {
+		t.Fatalf("reset test database: %v", err)
+	}
+
+	fixturePath := filepath.Join("..", "..", "demo", "alerts", "judikt_security_finding.json")
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read Judikt fixture: %v", err)
+	}
+	var payload incidents.AlertmanagerWebhook
+	if err := json.Unmarshal(fixture, &payload); err != nil {
+		t.Fatalf("parse Judikt fixture: %v", err)
+	}
+	payload.Alerts[0].StartsAt = time.Now().UTC().Add(-time.Minute)
+
+	store := incidents.NewStore(database)
+	auditor := audit.NewService(database)
+	manager := incidents.NewServiceManager(store, auditor, 30*time.Minute)
+	actor := "https://identity.example.test#judikt-finding-exporter"
+	first, err := manager.IngestAlertmanagerWithResult(ctx, payload, actor)
+	if err != nil {
+		t.Fatalf("ingest Judikt finding: %v", err)
+	}
+	second, err := manager.IngestAlertmanagerWithResult(ctx, payload, actor)
+	if err != nil {
+		t.Fatalf("replay Judikt outbox delivery: %v", err)
+	}
+	if len(first.Incidents) != 1 || len(second.Incidents) != 1 {
+		t.Fatalf("expected one incident response per delivery: first=%#v second=%#v", first, second)
+	}
+	incident := first.Incidents[0]
+	if second.Incidents[0].ID != incident.ID {
+		t.Fatalf("Judikt replay created a second incident: %s != %s", second.Incidents[0].ID, incident.ID)
+	}
+	const fingerprint = "5b4f34c54ffbf467e5287a66b74c8ab60d86859524db37c98c42f98d2dc04a2f"
+	wantDedupe := incidents.BuildDedupeKey(
+		"mcp-platform-ops", "JudiktMCPSecurityFinding", "production", fingerprint,
+	)
+	if incident.Service != "mcp-platform-ops" || incident.Severity != "sev2" || incident.DedupeKey != wantDedupe {
+		t.Fatalf("unexpected Judikt incident mapping: %#v", incident)
+	}
+	stored, err := store.ListIncidents(ctx)
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("Judikt replay must leave one durable incident: incidents=%#v err=%v", stored, err)
+	}
+	signals, err := store.ListSignals(ctx, incident.ID)
+	if err != nil || len(signals) != 2 {
+		t.Fatalf("both Judikt deliveries must remain as evidence: signals=%#v err=%v", signals, err)
+	}
+	if signals[0].Source != "alertmanager" || signals[0].Name != "JudiktMCPSecurityFinding" {
+		t.Fatalf("unexpected persisted Judikt signal: %#v", signals[0])
+	}
+	renderedBody, err := json.Marshal(signals[0].Body)
+	if err != nil {
+		t.Fatalf("marshal persisted Judikt evidence: %v", err)
+	}
+	for _, expected := range []string{"judikt", "blocked_pattern", "arguments_hash", "result_hash", "corr-42"} {
+		if !strings.Contains(string(renderedBody), expected) {
+			t.Fatalf("persisted Judikt evidence is missing %q: %s", expected, renderedBody)
+		}
+	}
+	for _, secret := range []string{"private.invalid", "raw-result-secret", "secret reason"} {
+		if strings.Contains(string(renderedBody), secret) {
+			t.Fatalf("persisted Judikt evidence leaked raw private content %q", secret)
+		}
+	}
+	timeline, err := store.ListTimeline(ctx, incident.ID)
+	if err != nil || len(timeline) != 2 || timeline[0].EventType != "alert_received" {
+		t.Fatalf("Judikt finding must create replay-visible timeline evidence: timeline=%#v err=%v", timeline, err)
+	}
+	auditEntries, err := auditor.List(ctx, 100)
+	if err != nil {
+		t.Fatalf("list Judikt audit evidence: %v", err)
+	}
+	createdEvents := 0
+	for _, entry := range auditEntries {
+		if entry.Action == "incident.detected" && entry.ResourceID == incident.ID && entry.ActorID == actor {
+			createdEvents++
+		}
+	}
+	if createdEvents != 1 {
+		t.Fatalf("Judikt replay should create one incident audit event, got %d", createdEvents)
 	}
 }
 

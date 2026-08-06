@@ -18,6 +18,10 @@ It is designed to feel like an internal reliability platform rather than a gener
 
 An LLM agent that owns RCA must infer causality from incomplete, attacker-influenceable telemetry; its conclusion can change between runs, invent evidence, group symptoms incorrectly, and leave no reproducible decision path before invoking a tool. Argus instead normalizes and stores every signal, correlates incidents through a persisted service graph, ranks hypotheses with fixed evidence rules and inspectable arithmetic, and permits only typed actions through deterministic policy, idempotency, and identity-bound approval. The LLM receives bounded structured evidence only after that work, so it can summarize or explain a recommendation but cannot alter the evidence, score, policy decision, approval, or execution; if the model is unavailable or returns invalid output, the deterministic incident pipeline still works.
 
+## Judikt Finding Ingestion
+
+Judikt's durable finding outbox calls Argus directly: it sends an Alertmanager-compatible `POST /v1/alerts/alertmanager` with an OIDC bearer service identity that has `ingest_signal`; it does **not** bypass correlation by calling the manual incident API. Judikt maps its five-minute finding dedupe key to the alert fingerprint, so Argus derives `service + JudiktMCPSecurityFinding + environment + fingerprint`, reuses the open incident on retry, and still retains every delivery as signal and timeline evidence. A successful `202` response returns the created or reused incident ID; `POST /v1/incidents/{id}/rca/generate` then runs the same deterministic RCA path used by observability alerts. The [complete producer/consumer contract](docs/integrations/judikt.md), [real Judikt-shaped fixture](demo/alerts/judikt_security_finding.json), and [PostgreSQL integration test](internal/incidents/service_integration_test.go) make the two-sided claim verifiable. Judikt creates security incidents; the separate Verdikt integration governs AI remediation proposals.
+
 ## Why This Stack
 
 This repository is intentionally optimized for local development on a MacBook Air M2 with 8 GB RAM:
@@ -83,7 +87,7 @@ Current measured baselines are `27.3%` across all Go statements and `54.5%` acro
 
 | Release check | What it proves | CI command/job |
 | --- | --- | --- |
-| Go tests and coverage | 89 named unit/integration test functions; both coverage floors must pass | `make test` |
+| Go tests and coverage | 90 named unit/integration test functions; both coverage floors must pass | `make test` |
 | Race detection | Concurrent Go tests are exercised under the race detector | `go test -race ./...` |
 | PostgreSQL and JetStream integration | Incident dedupe/topology grouping, audit integrity, durable queue delivery, and replay-safe control state use real disposable services | `make integration-test` |
 | Approval integration | Approval/expiry state and audit atomicity, Slack identity/reason binding, concurrent execution reservation, and publish rollback | `approval-integration` job |
