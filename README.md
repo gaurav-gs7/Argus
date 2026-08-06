@@ -268,7 +268,7 @@ make demo-typed-remediations
 - the proposer cannot approve their own action by default
 - unanswered requests escalate and then expire the remediation
 - high-risk actions are blocked
-- every state-changing operation appends to a verifiable SHA-256 audit hash chain
+- approval decisions commit their state transition and audit append atomically; other state-changing paths append to the same verifiable SHA-256 chain but do not yet share one transaction
 - duplicate alerts are deduplicated
 - downstream alert storms are grouped behind an observed or explicitly marked inferred root
 - duplicate remediation executions are ignored
@@ -302,6 +302,24 @@ argus remediation approve rem_123 \
 
 Identity comes from the verified OIDC issuer and subject, never the request body. The approval decision, remediation transition, and audit entries commit in one PostgreSQL transaction. A background controller escalates once at `ARGUS_APPROVAL_ESCALATE_AFTER` and moves unanswered requests and their remediations to `expired`/`timed_out` at `ARGUS_APPROVAL_TIMEOUT`.
 
+## Threat Model And Explicit Gaps
+
+Argus keeps AI output outside the correctness path and separates authorization, policy, approval, and typed execution. It is not presented as a production-certified control plane. The table below separates demonstrated v1 behavior from unresolved production failure modes.
+
+| Boundary | Demonstrated behavior | Explicit v1 gap |
+| --- | --- | --- |
+| Alert correlation | Exact dedupe keys, a bounded grouping window, deterministic topology walks, and retained downstream evidence | Missing fingerprints can collapse alerts with the same name; stale dependency edges can infer the wrong root; there is no topology freshness score |
+| RCA | Fixed rule IDs, evidence weights, confidence contributions, stable tie-breaking, and a reproducible evaluation harness | Text classification still trusts normalized alert/log content as evidence; it does not attest source provenance or calibrate scores from production outcomes |
+| PostgreSQL | Durable incidents, approvals, receipts, audit chain, and transactional local handler state | Incident ingestion spans multiple transactions, so a database failure can leave partial context; no HA, PITR, or automated failover is shipped |
+| NATS JetStream | Durable manual-ack consumption and redelivery; handler receipts make local replay safe | There is no transactional outbox: an API crash after `approved -> queued` but before publish can strand a queued remediation; no automatic reconciler or dead-letter stream exists |
+| Worker execution | Registered handlers validate bounded input, support dry-run, and reuse durable receipts | Exactly-once safety is proven only for the PostgreSQL-backed local adapters; a real external provider must supply its own idempotency token for the post-side-effect/pre-receipt crash window |
+| Policy | Denies unknown/high-risk actions, validates typed parameters, rate-limits repeats, trips a local circuit breaker, and requires approval for medium risk | The v1 decision uses a fixed Go policy and local environment context; it does not re-evaluate at execution or consider change freezes, error budgets, live blast radius, ownership quorum, or external OPA bundles |
+| Human approval | Durable request, verified OIDC/Slack identity, reason, four-eyes control, escalation, expiry, and atomic decision audit | Notification delivery is not exactly once, Slack identity mapping is static, and multi-party/quorum approvals are not implemented |
+| Audit | Append-only SHA-256 chain, persisted head, startup/periodic verification, and atomic approval audit | Several non-approval paths write audit after state mutation and currently treat an append failure as best effort; a database owner can rewrite both ledger and head without an external signed/WORM anchor |
+| Helios and Kubernetes | Helios delegation preserves the typed intent and idempotency key; Helm/Kustomize render in CI | Helios currently uses a safe simulated workflow mapping with no final-state reconciler; Kubernetes packaging is not exercised against a live HA cluster |
+
+The highest-priority production closures are a PostgreSQL transactional outbox plus queued-job reconciler, atomic audit coupling for every mutation, provider-side idempotency for real execution adapters, execution-time policy re-evaluation, and fault-injection tests across PostgreSQL/NATS/worker crash boundaries. The complete assumptions, failure matrix, policy coverage, non-goals, and closure plan are in [docs/threat-model.md](docs/threat-model.md).
+
 ## Current V1 Scope
 
 This repository includes:
@@ -315,7 +333,7 @@ This repository includes:
 - CI-validated Helm and Kustomize packaging for an undeployed production stretch path
 - docs, ADRs, migrations, scripts, committed demo evidence, dashboards, alerts, and CI checks
 
-See [docs/architecture.md](docs/architecture.md), [docs/rca-scoring.md](docs/rca-scoring.md), [docs/kubernetes.md](docs/kubernetes.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/rca-scoring.md](docs/rca-scoring.md), [docs/kubernetes.md](docs/kubernetes.md), [docs/audit-integrity.md](docs/audit-integrity.md), [docs/local-dev.md](docs/local-dev.md), [docs/remediation-safety.md](docs/remediation-safety.md), and [docs/demo-evidence](docs/demo-evidence/README.md).
 
 ## License
 

@@ -35,7 +35,7 @@ The correctness path does not depend on an LLM:
 10. Apply policy checks and require approval for medium-risk operations
 11. Validate typed target and parameter bounds again in the worker
 12. Execute through registered handlers using a durable idempotency receipt
-13. Append every state change to the serialized SHA-256 audit hash chain
+13. Append state changes to the serialized SHA-256 audit hash chain; approval transitions share the audit transaction, while full atomic coupling remains a documented gap for other paths
 
 RCA evidence uses explicit rule IDs and fixed `confidence x weight` contributions with bounded topology adjustments. The complete formula, coverage matrix, fallbacks, verification tests, and limitations are documented in [Deterministic RCA Scoring](rca-scoring.md).
 
@@ -93,3 +93,5 @@ The default profile keeps resource usage reasonable for 8 GB RAM by:
 Docker Compose is the supported local runtime. The Helm chart and Kustomize overlays package the three Argus-owned workloads for a production-shaped cluster while treating PostgreSQL, Redis, NATS, OIDC, Verdikt, ingress, TLS, and secrets as platform dependencies. Kubernetes resources are statically rendered in CI but remain an undeployed stretch path rather than a claim of production certification.
 
 See [Kubernetes Packaging](kubernetes.md) and [ADR 0010](adr/0010-add-kubernetes-packaging.md).
+
+The trust boundaries, dependency failure semantics, and claims that v1 intentionally does not make are documented in [Threat Model And Explicit Limitations](threat-model.md).

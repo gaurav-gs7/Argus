@@ -5,7 +5,7 @@
 - no arbitrary shell commands
 - only registered handlers execute work
 - every handler supports dry-run
-- every state mutation is audited
+- approval mutations are atomically audited; other mutations append audit records in a separate step
 - high-risk actions are denied
 - medium-risk actions require approval
 - approval requests are durable and bound to one exact remediation
@@ -59,3 +59,5 @@ awaiting_approval
 Notification delivery never grants authority. Generic webhooks only carry the bounded request and authenticated decision endpoint. Slack decisions additionally require Slack's signing-secret HMAC, a fresh timestamp, an allow-listed Slack user mapped to an Argus identity, and a non-empty modal reason. PostgreSQL remains the source of truth if notification delivery is retried or unavailable.
 
 Defaults are intentionally laptop-friendly: one goroutine sweeps every 15 seconds, no extra container is required, and an empty webhook URL leaves requests queryable through the API/CLI. For a generic webhook, set `ARGUS_APPROVAL_WEBHOOK_SECRET` so receivers can verify `X-Argus-Signature-256`. Slack uses a free incoming webhook plus a free Slack app for signed interactivity; it does not add a local service.
+
+These controls bound what v1 can execute; they do not make queue publication, external side effects, or every audit append atomic. See [Threat Model And Explicit Limitations](threat-model.md) for the crash-window and policy-coverage matrix.
