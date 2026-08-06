@@ -66,8 +66,6 @@ jobs:
                   json.load(handle)
           print(f"validated {len(paths)} JSON artifacts")
           PY
-      - name: Validate 150-second terminal evidence
-        run: make terminal-demo-check
       - name: Validate Prometheus and Alertmanager configs
         run: |
           docker run --rm --entrypoint /bin/promtool \

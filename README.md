@@ -96,7 +96,6 @@ Current measured baselines are `27.3%` across all Go statements and `54.5%` acro
 | OIDC and RBAC E2E | JWT signature, issuer/audience/role claims, viewer/operator/admin boundaries, and immutable actor identity against local Keycloak | `make oidc-test` |
 | AI adversarial tests | Nine prompt-injection, malformed tool output, candidate allow-list, topology contract, Verdikt `PROPOSE_ONLY`, internal auth, and AI metric checks | `make ai-test` |
 | Deterministic RCA evaluation | Five scenario scores, replay stability, evidence dedupe, tie-breaks, topology bounds, and safe fallback arithmetic | `make rca-eval` |
-| Terminal demo evidence | The committed 13-scene cast and looping `1280x720` GIF are exactly 150 seconds, contain every runtime proof marker, and leak no token or local path | `make terminal-demo-check` |
 | Artifact and supply-chain checks | `go vet`, `govulncheck`, portable docs, Compose, Helm/Kustomize, Prometheus, Alertmanager, OPA, JSON/shell validation, and production image builds | `quality` job |
 
 Coverage is intentionally reported without disguising service-backed gaps. The repository-wide profile runs without PostgreSQL or NATS, so conditional database/queue integration bodies do not raise its percentage; those paths are instead required in dedicated CI jobs. A passing gate means the listed contracts ran and the measured coverage did not regress below the floors. It does not mean every production failure mode is tested; the remaining outage and crash-injection gaps are listed in [Threat Model And Explicit Limitations](docs/threat-model.md).
@@ -202,16 +201,6 @@ curl -H "Authorization: Bearer ${ARGUS_API_TOKEN}" http://localhost:8080/v1/inci
 ```
 
 ## One-Command Demo
-
-For the full interview/reviewer experience, replay the committed 150-second terminal session. It uses terminal-native flowcharts for explanation, then shows actual API input, control-plane logs, PostgreSQL state, deterministic RCA output, Verdikt governance, approval denial/approval, JetStream execution, idempotency receipts, audit verification, and metrics:
-
-```bash
-make demo-terminal-replay
-```
-
-No running stack or recorder is required for replay. To execute the same presentation against the real local backend, run `make up`, `make seed`, then `make demo-terminal`; setup time is outside the 150-second content window. See the [scene timeline, live commands, and capture-integrity contract](docs/terminal-demo.md).
-
-The focused scenario demo remains available:
 
 ```bash
 make demo-postgres-exhaustion
