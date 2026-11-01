@@ -86,7 +86,44 @@ type RCAReport struct {
 	ModelBackend         string           `json:"model_backend,omitempty"`
 	ModelName            string           `json:"model_name,omitempty"`
 	Topology             IncidentTopology `json:"topology"`
+	EvidenceItems        []RCAEvidence    `json:"evidence_items"`
+	Score                RCAScore         `json:"score"`
 	CreatedAt            time.Time        `json:"created_at"`
+}
+
+// RCAEvidence is one observation behind an RCA report: a matched alert or a
+// probe that Argus actually sent to an observability backend.
+type RCAEvidence struct {
+	RuleID     string    `json:"rule_id"`
+	Kind       string    `json:"kind"`
+	Source     string    `json:"source"`
+	Reference  string    `json:"reference"`
+	Service    string    `json:"service"`
+	Query      string    `json:"query,omitempty"`
+	Status     string    `json:"status"`
+	Value      *float64  `json:"value,omitempty"`
+	Comparator string    `json:"comparator,omitempty"`
+	Threshold  *float64  `json:"threshold,omitempty"`
+	Weight     float64   `json:"weight"`
+	Claim      string    `json:"claim"`
+	Error      string    `json:"error,omitempty"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+// RCAScore is the full arithmetic behind a report's confidence.
+type RCAScore struct {
+	RuleID             string   `json:"rule_id,omitempty"`
+	Baseline           float64  `json:"baseline"`
+	AlertMatch         float64  `json:"alert_match"`
+	Corroborated       float64  `json:"corroborated"`
+	Refuted            float64  `json:"refuted"`
+	RefutationPenalty  float64  `json:"refutation_penalty"`
+	Raw                float64  `json:"raw"`
+	Sources            []string `json:"sources"`
+	SourceCap          float64  `json:"source_cap"`
+	TopologyAdjustment float64  `json:"topology_adjustment"`
+	Contradicted       bool     `json:"contradicted"`
+	Final              float64  `json:"final"`
 }
 
 type IncidentTopology struct {

@@ -19,6 +19,7 @@ import (
 	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/config"
 	"github.com/gauravgs7/argus/internal/db"
+	"github.com/gauravgs7/argus/internal/evidence"
 	"github.com/gauravgs7/argus/internal/incidents"
 	"github.com/gauravgs7/argus/internal/policy"
 	"github.com/gauravgs7/argus/internal/queue"
@@ -118,7 +119,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	approvalContext, approvalCancel := context.WithCancel(context.Background())
 	approvalService.Start(approvalContext)
 	incidentManager := incidents.NewServiceManager(store, auditor, cfg.IncidentGrouping)
-	rcaService := rca.NewService(store, cfg.AIServiceURL, cfg.AIServiceToken, metrics)
+	probeClient := &http.Client{Timeout: cfg.RCAProbeTimeout}
+	evidenceCollector := evidence.NewCollector(cfg.RCAProbeTimeout, map[evidence.Backend]evidence.Querier{
+		evidence.Prometheus: evidence.NewPrometheus(cfg.PrometheusURL, cfg.PrometheusBearerToken, probeClient),
+		evidence.Loki:       evidence.NewLoki(cfg.LokiURL, cfg.LokiBearerToken, probeClient),
+	})
+	if !evidenceCollector.Configured(evidence.Prometheus) && !evidenceCollector.Configured(evidence.Loki) {
+		logger.Warn("no RCA evidence backends configured; set ARGUS_PROMETHEUS_URL and ARGUS_LOKI_URL or RCA confidence stays capped at the alert-only bound")
+	}
+	rcaService := rca.NewService(store, cfg.AIServiceURL, cfg.AIServiceToken, metrics, evidenceCollector)
 	var executor remediation.Executor
 	switch cfg.RemediationExecutor {
 	case "helios":

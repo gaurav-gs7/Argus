@@ -1,129 +1,134 @@
 package correlation
 
 import (
-	"encoding/json"
+	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/incidents"
 )
 
-type Result struct {
-	Events   []incidents.TimelineEvent
-	Evidence []EvidenceItem
-}
-
-type RuleID string
-
-const (
-	RulePostgresConnectionExhaustion RuleID = "postgres_connection_exhaustion"
-	RuleRedisMemoryPressure          RuleID = "redis_memory_pressure"
-	RuleNginxUpstreamConfig          RuleID = "nginx_upstream_config"
-	RuleDependencyLatency            RuleID = "dependency_latency"
-	RuleBadConfigRollout             RuleID = "bad_config_rollout"
-	RuleUnclassified                 RuleID = "unclassified"
-)
-
-type EvidenceItem struct {
+// Match records that a persisted alert signal names a known failure mode.
+type Match struct {
 	RuleID     RuleID
-	Type       string
-	Source     string
-	Summary    string
-	Confidence float64
-	Weight     float64
-	OccurredAt time.Time
+	Rule       Rule
+	SignalID   string
+	AlertName  string
+	Service    string
+	Labels     map[string]string
+	ObservedAt time.Time
+	Reason     string
 }
 
-type Correlator struct{}
+type Correlator struct {
+	rules       []Rule
+	byAlertName map[string]int
+	byID        map[RuleID]int
+}
 
-func New() *Correlator { return &Correlator{} }
+// New returns a correlator over the default rule table. It panics if the
+// compiled table is invalid; that is caught by unit tests, not production.
+func New() *Correlator {
+	correlator, err := NewWithRules(DefaultRules())
+	if err != nil {
+		panic(err)
+	}
+	return correlator
+}
 
-func (c *Correlator) Correlate(incident incidents.Incident, signals []incidents.Signal) Result {
-	result := Result{}
+func NewWithRules(rules []Rule) (*Correlator, error) {
+	if err := ValidateRules(rules); err != nil {
+		return nil, err
+	}
+	c := &Correlator{rules: rules, byAlertName: map[string]int{}, byID: map[RuleID]int{}}
+	for i, rule := range rules {
+		c.byID[rule.ID] = i
+		for _, name := range rule.AlertNames {
+			c.byAlertName[name] = i
+		}
+	}
+	return c, nil
+}
+
+func (c *Correlator) Rules() []Rule { return c.rules }
+
+// Match maps each signal to at most one rule using structured identity only:
+// an explicit argus_failure_mode label wins, then an exact alertname match.
+// Annotation text, summaries, and service names are never used to select a
+// rule. Matches are returned in observation order.
+func (c *Correlator) Match(incident incidents.Incident, signals []incidents.Signal) []Match {
+	var matches []Match
 	for _, signal := range signals {
+		labels := SignalLabels(signal)
+		alertName := signal.Name
+		if alertName == "" {
+			alertName = labels["alertname"]
+		}
+
+		index, reason := -1, ""
+		if mode := labels[FailureModeLabel]; mode != "" {
+			if i, ok := c.byID[RuleID(mode)]; ok {
+				index, reason = i, fmt.Sprintf("label %s=%s", FailureModeLabel, mode)
+			}
+		}
+		if index < 0 {
+			if i, ok := c.byAlertName[alertName]; ok {
+				index, reason = i, "alertname "+alertName
+			}
+		}
+		if index < 0 {
+			continue
+		}
+
 		observedAt := signal.ObservedAt
 		if observedAt.IsZero() {
 			observedAt = incident.StartedAt
 		}
-		text := signalText(signal)
-		result.add(signalEvidence(incident, signal, text, observedAt)...)
-	}
-
-	sort.SliceStable(result.Events, func(i, j int) bool {
-		return result.Events[i].OccurredAt.Before(result.Events[j].OccurredAt)
-	})
-	sort.SliceStable(result.Evidence, func(i, j int) bool {
-		return result.Evidence[i].OccurredAt.Before(result.Evidence[j].OccurredAt)
-	})
-	return result
-}
-
-func signalText(signal incidents.Signal) string {
-	body, _ := json.Marshal(signal.Body)
-	return strings.ToLower(signal.Name + " " + signal.Source + " " + signal.SignalType + " " + string(body))
-}
-
-func signalEvidence(incident incidents.Incident, signal incidents.Signal, text string, observedAt time.Time) []EvidenceItem {
-	var items []EvidenceItem
-	add := func(ruleID RuleID, kind, source, summary string, confidence, weight float64) {
-		items = append(items, EvidenceItem{
-			RuleID: ruleID, Type: kind, Source: source, Summary: summary, Confidence: confidence, Weight: weight, OccurredAt: observedAt,
+		matches = append(matches, Match{
+			RuleID:     c.rules[index].ID,
+			Rule:       c.rules[index],
+			SignalID:   signal.ID,
+			AlertName:  alertName,
+			Service:    SignalService(incident, signal, labels),
+			Labels:     labels,
+			ObservedAt: observedAt,
+			Reason:     reason,
 		})
 	}
-
-	if strings.Contains(text, "postgres") && strings.Contains(text, "connection") {
-		add(RulePostgresConnectionExhaustion, "metric_anomaly", "prometheus", "postgres connection pool saturation crossed threshold", 0.91, 0.34)
-		add(RulePostgresConnectionExhaustion, "log_pattern", "loki", "application logs indicate postgres connection acquisition timeout", 0.87, 0.29)
-		add(RulePostgresConnectionExhaustion, "service_impact", signal.Source, incident.Service+" error rate increased during the incident window", 0.82, 0.17)
-	}
-	if strings.Contains(text, "redis") && strings.Contains(text, "memory") {
-		add(RuleRedisMemoryPressure, "metric_anomaly", "prometheus", "redis memory pressure signal crossed threshold", 0.86, 0.31)
-		add(RuleRedisMemoryPressure, "service_impact", signal.Source, "cache errors increased during the incident window", 0.82, 0.22)
-	}
-	if strings.Contains(text, "nginx") && strings.Contains(text, "5xx") {
-		add(RuleNginxUpstreamConfig, "edge_anomaly", "prometheus", "edge layer is returning elevated 5xx while upstream health is isolated", 0.89, 0.30)
-		add(RuleNginxUpstreamConfig, "config_event", "config", "nginx route or upstream config changed near the incident window", 0.76, 0.20)
-	}
-	if strings.Contains(text, "notification") || strings.Contains(text, "latency") {
-		add(RuleDependencyLatency, "trace_anomaly", "otel", "downstream dependency latency dominates the request path", 0.84, 0.30)
-		add(RuleDependencyLatency, "metric_anomaly", "prometheus", "p95 latency increased before failure rate dominated", 0.77, 0.18)
-	}
-	if strings.Contains(text, "config") || strings.Contains(text, "parse") || strings.Contains(text, "rollout") {
-		add(RuleBadConfigRollout, "config_event", "config", "configuration rollout preceded service errors", 0.93, 0.35)
-		add(RuleBadConfigRollout, "log_pattern", "loki", "runtime logs contain config or connection errors", 0.85, 0.24)
-	}
-
-	if len(items) == 0 {
-		add(RuleUnclassified, "signal", signal.Source, "unclassified signal captured for deterministic analysis", 0.45, 0.05)
-	}
-	return items
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].ObservedAt.Before(matches[j].ObservedAt)
+	})
+	return matches
 }
 
-func (r *Result) add(items ...EvidenceItem) {
-	seen := map[string]struct{}{}
-	for _, existing := range r.Evidence {
-		seen[string(existing.RuleID)+existing.Type+existing.Source+existing.Summary] = struct{}{}
-	}
-	for _, item := range items {
-		key := string(item.RuleID) + item.Type + item.Source + item.Summary
-		if _, ok := seen[key]; ok {
-			continue
+// SignalLabels extracts the alert label set from a persisted signal body.
+func SignalLabels(signal incidents.Signal) map[string]string {
+	labels := map[string]string{}
+	switch raw := signal.Body["labels"].(type) {
+	case map[string]string:
+		for key, value := range raw {
+			labels[key] = value
 		}
-		seen[key] = struct{}{}
-		r.Evidence = append(r.Evidence, item)
-		r.Events = append(r.Events, incidents.TimelineEvent{
-			IncidentID: "",
-			EventType:  item.Type,
-			Source:     item.Source,
-			Summary:    item.Summary,
-			Evidence: map[string]any{
-				"source_signal": item.Source,
-				"rule_id":       item.RuleID,
-				"weight":        item.Weight,
-			},
-			Confidence: item.Confidence,
-			OccurredAt: item.OccurredAt,
-		})
+	case map[string]any:
+		for key, value := range raw {
+			if text, ok := value.(string); ok {
+				labels[key] = text
+			}
+		}
 	}
+	return labels
+}
+
+// SignalService is the service a signal was observed on: the alert's service
+// label, then the persisted topology observation, then the incident service.
+func SignalService(incident incidents.Incident, signal incidents.Signal, labels map[string]string) string {
+	if service := labels["service"]; service != "" {
+		return service
+	}
+	if topology, ok := signal.Body["topology"].(map[string]any); ok {
+		if service, ok := topology["observed_service"].(string); ok && service != "" {
+			return service
+		}
+	}
+	return incident.Service
 }

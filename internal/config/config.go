@@ -14,6 +14,11 @@ type Config struct {
 	NATSURL                    string
 	AIServiceURL               string
 	AIServiceToken             string
+	PrometheusURL              string
+	PrometheusBearerToken      string
+	LokiURL                    string
+	LokiBearerToken            string
+	RCAProbeTimeout            time.Duration
 	LogLevel                   string
 	OIDCIssuerURL              string
 	OIDCAudience               string
@@ -55,6 +60,11 @@ func Load() Config {
 		NATSURL:                    getenv("ARGUS_NATS_URL", "nats://localhost:4222"),
 		AIServiceURL:               strings.TrimRight(getenv("ARGUS_AI_SERVICE_URL", "http://localhost:8090"), "/"),
 		AIServiceToken:             getenv("ARGUS_AI_SERVICE_TOKEN", "argus-ai-local"),
+		PrometheusURL:              strings.TrimRight(getenv("ARGUS_PROMETHEUS_URL", ""), "/"),
+		PrometheusBearerToken:      getenv("ARGUS_PROMETHEUS_BEARER_TOKEN", ""),
+		LokiURL:                    strings.TrimRight(getenv("ARGUS_LOKI_URL", ""), "/"),
+		LokiBearerToken:            getenv("ARGUS_LOKI_BEARER_TOKEN", ""),
+		RCAProbeTimeout:            getduration("ARGUS_RCA_PROBE_TIMEOUT", 3*time.Second),
 		LogLevel:                   strings.ToUpper(getenv("ARGUS_LOG_LEVEL", "INFO")),
 		OIDCIssuerURL:              strings.TrimRight(getenv("ARGUS_OIDC_ISSUER_URL", ""), "/"),
 		OIDCAudience:               getenv("ARGUS_OIDC_AUDIENCE", "argus-api"),

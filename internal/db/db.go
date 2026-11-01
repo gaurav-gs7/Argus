@@ -124,6 +124,8 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
 		`ALTER TABLE rca_reports ADD COLUMN IF NOT EXISTS topology_analysis JSONB NOT NULL DEFAULT '{}'::jsonb;`,
+		`ALTER TABLE rca_reports ADD COLUMN IF NOT EXISTS evidence_items JSONB NOT NULL DEFAULT '[]'::jsonb;`,
+		`ALTER TABLE rca_reports ADD COLUMN IF NOT EXISTS score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb;`,
 		`CREATE TABLE IF NOT EXISTS remediation_actions (
 			id TEXT PRIMARY KEY,
 			incident_id TEXT REFERENCES incidents(id),

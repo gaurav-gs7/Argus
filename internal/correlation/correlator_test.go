@@ -1,43 +1,154 @@
 package correlation
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gauravgs7/argus/internal/evidence"
 	"github.com/gauravgs7/argus/internal/incidents"
 )
 
-func TestCorrelatePostgresEvidence(t *testing.T) {
-	incident := incidents.Incident{ID: "inc_1", Service: "payments-api", StartedAt: time.Now().UTC()}
-	signals := []incidents.Signal{{
-		Name:       "PaymentsAPIPostgresConnectionExhaustion",
-		Source:     "alertmanager",
-		SignalType: "alert",
-		Body:       map[string]any{"message": "postgres connection acquisition timeout"},
-		ObservedAt: incident.StartedAt,
-	}}
+func alertSignal(name string, labels map[string]any, annotations map[string]any) incidents.Signal {
+	body := map[string]any{"labels": labels}
+	if annotations != nil {
+		body["annotations"] = annotations
+	}
+	return incidents.Signal{ID: "sig_" + name, Name: name, Source: "alertmanager", SignalType: "alert", Body: body}
+}
 
-	result := New().Correlate(incident, signals)
-	if len(result.Events) < 2 {
-		t.Fatalf("expected multiple correlated timeline events, got %d", len(result.Events))
+func TestDefaultRulesAreValid(t *testing.T) {
+	if err := ValidateRules(DefaultRules()); err != nil {
+		t.Fatalf("compiled rule table is invalid: %v", err)
 	}
-	if result.Evidence[0].Confidence <= 0 || result.Evidence[0].Weight <= 0 {
-		t.Fatalf("expected scored evidence, got %+v", result.Evidence[0])
-	}
-	if result.Evidence[0].RuleID != RulePostgresConnectionExhaustion {
-		t.Fatalf("rule id=%q, want %q", result.Evidence[0].RuleID, RulePostgresConnectionExhaustion)
+	for _, rule := range DefaultRules() {
+		backends := map[evidence.Backend]bool{}
+		for _, probe := range rule.Probes {
+			backends[probe.Backend] = true
+		}
+		if !backends[evidence.Prometheus] && !backends[evidence.Loki] {
+			t.Fatalf("rule %s has no backend probes", rule.ID)
+		}
 	}
 }
 
-func TestCorrelateDeduplicatesRepeatedEvidence(t *testing.T) {
-	incident := incidents.Incident{ID: "inc_1", Service: "payments-api", StartedAt: time.Now().UTC()}
-	signal := incidents.Signal{
-		Name: "PaymentsAPIRedisMemoryPressure", Source: "alertmanager", SignalType: "alert",
-		Body: map[string]any{"message": "redis memory pressure"}, ObservedAt: incident.StartedAt,
+func TestMatchUsesExactAlertName(t *testing.T) {
+	incident := incidents.Incident{ID: "inc_1", Service: "payments-api", StartedAt: time.Unix(100, 0)}
+	matches := New().Match(incident, []incidents.Signal{
+		alertSignal("PaymentsAPIPostgresPoolSaturation", map[string]any{"service": "payments-api"}, nil),
+	})
+	if len(matches) != 1 || matches[0].RuleID != RulePostgresConnectionExhaustion {
+		t.Fatalf("matches=%+v", matches)
 	}
+	if matches[0].Reason != "alertname PaymentsAPIPostgresPoolSaturation" || matches[0].Service != "payments-api" {
+		t.Fatalf("unexpected match detail: %+v", matches[0])
+	}
+	if !matches[0].ObservedAt.Equal(incident.StartedAt) {
+		t.Fatalf("zero observation time should fall back to incident start")
+	}
+}
 
-	result := New().Correlate(incident, []incidents.Signal{signal, signal})
-	if len(result.Evidence) != 2 || len(result.Events) != 2 {
-		t.Fatalf("duplicate signal inflated evidence: evidence=%d events=%d", len(result.Evidence), len(result.Events))
+func TestAnnotationTextNeverSelectsARule(t *testing.T) {
+	incident := incidents.Incident{ID: "inc_1", Service: "notification-api"}
+	traps := []incidents.Signal{
+		alertSignal("NodeDiskAlmostFull", map[string]any{"service": "notification-api"},
+			map[string]any{"summary": "postgres connection latency after config rollout; redis memory; nginx 5xx"}),
+		alertSignal("PaymentsAPIHighErrorRate", map[string]any{"service": "payments-api", "component": "postgres"},
+			map[string]any{"description": "connection pool"}),
+		alertSignal("paymentsapipostgresconnectionexhaustion", map[string]any{}, nil),
+	}
+	if matches := New().Match(incident, traps); len(matches) != 0 {
+		t.Fatalf("free text or near-miss names selected rules: %+v", matches)
+	}
+}
+
+func TestFailureModeLabelOverridesAlertName(t *testing.T) {
+	incident := incidents.Incident{Service: "orders"}
+	matches := New().Match(incident, []incidents.Signal{
+		alertSignal("OrdersDBSaturated", map[string]any{FailureModeLabel: "postgres_connection_exhaustion", "service": "orders"}, nil),
+		alertSignal("PaymentsAPIRedisMemoryPressure", map[string]any{FailureModeLabel: "bad_config_rollout"}, nil),
+		alertSignal("RedisMemoryHigh", map[string]any{FailureModeLabel: "not_a_rule"}, nil),
+	})
+	if len(matches) != 3 {
+		t.Fatalf("matches=%+v", matches)
+	}
+	want := []RuleID{RulePostgresConnectionExhaustion, RuleBadConfigRollout, RuleRedisMemoryPressure}
+	for i, id := range want {
+		if matches[i].RuleID != id {
+			t.Fatalf("match %d rule=%s want %s", i, matches[i].RuleID, id)
+		}
+	}
+	if !strings.HasPrefix(matches[0].Reason, "label argus_failure_mode=") || matches[2].Reason != "alertname RedisMemoryHigh" {
+		t.Fatalf("reasons=%q %q", matches[0].Reason, matches[2].Reason)
+	}
+}
+
+func TestSignalServiceResolutionOrder(t *testing.T) {
+	incident := incidents.Incident{Service: "incident-svc"}
+	cases := []struct {
+		signal incidents.Signal
+		want   string
+	}{
+		{incidents.Signal{Body: map[string]any{"labels": map[string]string{"service": "label-svc"}, "topology": map[string]any{"observed_service": "topo-svc"}}}, "label-svc"},
+		{incidents.Signal{Body: map[string]any{"labels": map[string]any{}, "topology": map[string]any{"observed_service": "topo-svc"}}}, "topo-svc"},
+		{incidents.Signal{Body: map[string]any{}}, "incident-svc"},
+	}
+	for _, tc := range cases {
+		if got := SignalService(incident, tc.signal, SignalLabels(tc.signal)); got != tc.want {
+			t.Fatalf("service=%q want %q", got, tc.want)
+		}
+	}
+}
+
+func TestSignalLabelsIgnoresNonStringValues(t *testing.T) {
+	labels := SignalLabels(incidents.Signal{Body: map[string]any{"labels": map[string]any{"a": "x", "b": 3, "c": nil}}})
+	if len(labels) != 1 || labels["a"] != "x" {
+		t.Fatalf("labels=%v", labels)
+	}
+	if len(SignalLabels(incidents.Signal{Body: map[string]any{"labels": "oops"}})) != 0 {
+		t.Fatal("malformed labels should be ignored")
+	}
+}
+
+func TestMatchesAreOrderedByObservationTime(t *testing.T) {
+	early := alertSignal("Nginx5xxSpike", map[string]any{"service": "nginx"}, nil)
+	early.ObservedAt = time.Unix(10, 0)
+	late := alertSignal("PaymentsAPIBadConfigRollout", map[string]any{"service": "payments-api"}, nil)
+	late.ObservedAt = time.Unix(20, 0)
+	matches := New().Match(incidents.Incident{}, []incidents.Signal{late, early})
+	if len(matches) != 2 || matches[0].RuleID != RuleNginxUpstreamConfig {
+		t.Fatalf("matches not time ordered: %+v", matches)
+	}
+}
+
+func TestValidateRulesRejectsBrokenTables(t *testing.T) {
+	base := DefaultRules()
+	cases := map[string]func([]Rule) []Rule{
+		"duplicate id": func(r []Rule) []Rule { r[1].ID = r[0].ID; return r },
+		"shared alert": func(r []Rule) []Rule { r[1].AlertNames = append(r[1].AlertNames, r[0].AlertNames[0]); return r },
+		"no alerts":    func(r []Rule) []Rule { r[0].AlertNames = nil; return r },
+		"no probes":    func(r []Rule) []Rule { r[0].Probes = nil; return r },
+		"bad probe":    func(r []Rule) []Rule { r[0].Probes[0].Backend = "tempo"; return r },
+		"dup probe":    func(r []Rule) []Rule { r[0].Probes[1].ID = r[0].Probes[0].ID; return r },
+		"overweight": func(r []Rule) []Rule {
+			r[0].Probes = append(r[0].Probes, r[0].Probes[0])
+			r[0].Probes[len(r[0].Probes)-1].ID = "extra"
+			return r
+		},
+		"no hypothesis": func(r []Rule) []Rule { r[0].Hypothesis = ""; return r },
+	}
+	for name, mutate := range cases {
+		rules := make([]Rule, len(base))
+		for i, rule := range base {
+			rule.AlertNames = append([]string(nil), rule.AlertNames...)
+			rule.Probes = append([]evidence.Probe(nil), rule.Probes...)
+			rules[i] = rule
+		}
+		if err := ValidateRules(mutate(rules)); err == nil {
+			t.Fatalf("%s: broken rule table accepted", name)
+		}
+		if _, err := NewWithRules(mutate(rules)); err == nil {
+			t.Fatalf("%s: NewWithRules accepted a broken table", name)
+		}
 	}
 }
