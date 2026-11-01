@@ -22,7 +22,7 @@ An LLM agent that owns RCA must infer causality from incomplete, attacker-influe
 
 ## Judikt Finding Ingestion
 
-Judikt's durable finding outbox calls Argus directly: it sends an Alertmanager-compatible `POST /v1/alerts/alertmanager` with an OIDC bearer service identity that has `ingest_signal`; it does **not** bypass correlation by calling the manual incident API. Judikt maps its five-minute finding dedupe key to the alert fingerprint, so Argus derives `service + JudiktMCPSecurityFinding + environment + fingerprint`, reuses the open incident on retry, and still retains every delivery as signal and timeline evidence. A successful `202` response returns the created or reused incident ID; `POST /v1/incidents/{id}/rca/generate` then runs the same deterministic RCA path used by observability alerts. The [complete producer/consumer contract](docs/integrations/judikt.md), [real Judikt-shaped fixture](demo/alerts/judikt_security_finding.json), and [PostgreSQL integration test](internal/incidents/service_integration_test.go) make the two-sided claim verifiable. Judikt creates security incidents; the separate Verdikt integration governs AI remediation proposals.
+Judikt's durable finding outbox calls Argus directly: it sends an Alertmanager-compatible `POST /v1/alerts/alertmanager` with an OIDC bearer service identity that has `ingest_signal` (the least-privilege `ingester` role); it does **not** bypass correlation by calling the manual incident API. Judikt maps its five-minute finding dedupe key to the alert fingerprint, so Argus derives `service + JudiktMCPSecurityFinding + environment + fingerprint`, reuses the open incident on retry, and still retains every delivery as signal and timeline evidence. A successful `202` response returns the created or reused incident ID; `POST /v1/incidents/{id}/rca/generate` then runs the same deterministic RCA path used by observability alerts. The [complete producer/consumer contract](docs/integrations/judikt.md), [real Judikt-shaped fixture](demo/alerts/judikt_security_finding.json), and [PostgreSQL integration test](internal/incidents/service_integration_test.go) make the two-sided claim verifiable. Judikt creates security incidents; the separate Verdikt integration governs AI remediation proposals.
 
 ## Why This Stack
 
@@ -40,6 +40,14 @@ This repository is intentionally optimized for local development on a MacBook Ai
 - Helm and Kustomize packaging as an undeployed production stretch path
 
 The default local profile keeps the AI service lightweight and mock-friendly. Ollama and Gemini can be enabled explicitly.
+
+## Alertmanager Ingestion
+
+`configs/alertmanager/alertmanager.yml` delivers to Argus with an OAuth2 client-credentials token from the `argus-alertmanager` Keycloak client, which maps to the `ingester` role: it may submit signals and nothing else. The webhook reader accepts Alertmanager's v4 payload and ignores fields it does not know, so an Alertmanager upgrade cannot turn deliveries into `400`s.
+
+Each delivery is applied in one PostgreSQL transaction under a transaction-scoped advisory lock, so concurrent deliveries during an alert storm queue behind each other instead of exhausting the connection pool, and a failure leaves nothing behind for the retry. Argus tracks every alert attached to an incident as firing or resolved. An open incident keeps absorbing its alerts while any of them fires (a firing alert not re-sent for `ARGUS_ALERT_STALE_AFTER`, default 6h, stops counting) or within `ARGUS_INCIDENT_GROUPING_WINDOW` of its last activity. Resolved notifications record `alert_resolved`, and `alerts_cleared` once the last alert clears.
+
+This path was verified end to end with a real Alertmanager v0.27.0, the `argus-api` binary, PostgreSQL, and JetStream: a 30-minute-old outage re-notified four times stayed one incident, its resolution cleared the alerts without opening a new incident, fifteen concurrent alert groups produced fifteen incidents with no failed deliveries, and the ingester token was refused read access. The previous binary rejected every real delivery with `json: unknown field "version"`.
 
 ## Optional Helios Integration
 
@@ -268,8 +276,11 @@ make demo-typed-remediations
 - the proposer cannot approve their own action by default
 - unanswered requests escalate and then expire the remediation
 - high-risk actions are blocked
-- approval decisions commit their state transition and audit append atomically; other state-changing paths append to the same verifiable SHA-256 chain but do not yet share one transaction
-- duplicate alerts are deduplicated
+- approval decisions and alert ingestion commit their state changes and audit appends atomically; remediation and worker paths append to the same verifiable SHA-256 chain but do not yet share one transaction
+- duplicate alerts are deduplicated, and an outage stays one incident for as long as its alerts keep firing
+- resolved notifications mark alerts cleared on the open incident; they never open an incident, and the incident stays open until an operator resolves it
+- a cancelled remediation never executes, even if its message is already queued; remediation cannot be dispatched for a resolved or cancelled incident
+- incident status only moves along the defined lifecycle; invalid operator transitions return `409`
 - downstream alert storms are grouped behind an observed or explicitly marked inferred root
 - duplicate remediation executions are ignored
 
@@ -308,17 +319,17 @@ Argus keeps AI output outside the correctness path and separates authorization, 
 
 | Boundary | Demonstrated behavior | Explicit v1 gap |
 | --- | --- | --- |
-| Alert correlation | Exact dedupe keys, a bounded grouping window, deterministic topology walks, and retained downstream evidence | Missing fingerprints can collapse alerts with the same name; stale dependency edges can infer the wrong root; there is no topology freshness score |
+| Alert correlation | Exact dedupe keys, per-incident alert state (an outage stays one incident while its alerts fire; resolved notifications clear alerts but never open incidents), deterministic topology walks, and retained downstream evidence | Missing fingerprints can collapse alerts with the same name; stale dependency edges can infer the wrong root; there is no topology freshness score |
 | RCA | Rules selected by exact alertname or explicit label; confidence from probes Argus actually ran against Prometheus/Loki, capped by independent sources; contradicted hypotheses propose diagnostics only | Weights and thresholds are uncalibrated heuristics; probes run at RCA time and can miss a recovered condition; no trace backend |
-| PostgreSQL | Durable incidents, approvals, receipts, audit chain, and transactional local handler state | Incident ingestion spans multiple transactions, so a database failure can leave partial context; no HA, PITR, or automated failover is shipped |
+| PostgreSQL | Durable incidents, approvals, receipts, audit chain, and transactional local handler state; each alert delivery (incidents, signals, timeline, audit) commits in one transaction | Ingestion is serialized by one advisory lock; no HA, PITR, or automated failover is shipped |
 | NATS JetStream | Durable manual-ack consumption and redelivery; handler receipts make local replay safe | There is no transactional outbox: an API crash after `approved -> queued` but before publish can strand a queued remediation; no automatic reconciler or dead-letter stream exists |
-| Worker execution | Registered handlers validate bounded input, support dry-run, and reuse durable receipts | Exactly-once safety is proven only for the PostgreSQL-backed local adapters; a real external provider must supply its own idempotency token for the post-side-effect/pre-receipt crash window |
-| Policy | Denies unknown/high-risk actions, validates typed parameters, rate-limits repeats, trips a local circuit breaker, and requires approval for medium risk | The v1 decision uses a fixed Go policy and local environment context; it does not re-evaluate at execution or consider change freezes, error budgets, live blast radius, ownership quorum, or external OPA bundles |
+| Worker execution | Registered handlers validate bounded input, support dry-run, and reuse durable receipts; workers claim actions with compare-and-swap so a cancelled action never runs; replicas share one queue group | Exactly-once safety is proven only for the PostgreSQL-backed local adapters; a real external provider must supply its own idempotency token for the post-side-effect/pre-receipt crash window |
+| Policy | Denies missing roles, unknown/high-risk actions, and environments not enabled; risk comes from the action catalog; validates typed parameters, rate-limits repeats, trips a local circuit breaker, and requires approval for medium risk | Fixed Go policy; it does not re-evaluate at execution or consider change freezes, error budgets, live blast radius, ownership quorum, or external OPA bundles |
 | Human approval | Durable request, verified OIDC/Slack identity, reason, four-eyes control, escalation, expiry, and atomic decision audit | Notification delivery is not exactly once, Slack identity mapping is static, and multi-party/quorum approvals are not implemented |
-| Audit | Append-only SHA-256 chain, persisted head, startup/periodic verification, and atomic approval audit | Several non-approval paths write audit after state mutation and currently treat an append failure as best effort; a database owner can rewrite both ledger and head without an external signed/WORM anchor |
+| Audit | Append-only SHA-256 chain, persisted head, startup/periodic verification, and atomic audit for approvals and alert ingestion | Remediation and worker paths still write audit after state mutation and currently treat an append failure as best effort; a database owner can rewrite both ledger and head without an external signed/WORM anchor |
 | Helios and Kubernetes | Helios delegation preserves the typed intent and idempotency key; Helm/Kustomize render in CI | Helios currently uses a safe simulated workflow mapping with no final-state reconciler; Kubernetes packaging is not exercised against a live HA cluster |
 
-The highest-priority production closures are a PostgreSQL transactional outbox plus queued-job reconciler, atomic audit coupling for every mutation, provider-side idempotency for real execution adapters, execution-time policy re-evaluation, and fault-injection tests across PostgreSQL/NATS/worker crash boundaries. The complete assumptions, failure matrix, policy coverage, non-goals, and closure plan are in [docs/threat-model.md](docs/threat-model.md).
+The highest-priority production closures are a PostgreSQL transactional outbox plus queued-job reconciler, atomic audit coupling for the remaining remediation and worker mutations, provider-side idempotency for real execution adapters, execution-time policy re-evaluation, and fault-injection tests across PostgreSQL/NATS/worker crash boundaries. The complete assumptions, failure matrix, policy coverage, non-goals, and closure plan are in [docs/threat-model.md](docs/threat-model.md).
 
 ## Current V1 Scope
 

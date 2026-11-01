@@ -6,7 +6,7 @@ Argus uses Docker Compose for supported local development. The Kubernetes packag
 
 - Helm chart at `deploy/helm/argus`
 - Kustomize base plus `local` and `production` overlays at `deploy/kustomize`
-- API, worker, and optional AI deployments
+- API, worker, and optional AI deployments (worker replicas share one JetStream queue group, so `worker.replicas` above 1 splits remediation work rather than failing to subscribe)
 - non-root pods, dropped Linux capabilities, read-only root filesystems, and disabled service-account token mounts
 - CPU and memory requests/limits sized conservatively
 - API and AI health probes

@@ -39,7 +39,7 @@ Core endpoints:
 
 Judikt's finding outbox uses `POST /v1/alerts/alertmanager`. It does not call `POST /v1/incidents`; using the normal alert ingress ensures security findings receive the same normalization, grouping, topology, signal, timeline, audit, and deterministic RCA treatment as operational alerts.
 
-The request requires `Authorization: Bearer <OIDC access token>`. The token's mapped Argus role must include `ingest_signal` (`operator` or `admin` in v1). Judikt places its dedupe key in `alerts[0].fingerprint`, maps risk to Argus severity, labels the source as `judikt`, and forwards hashes instead of caller arguments, model/tool results, tokens, or raw injected text. See the committed [producer-shaped payload](../demo/alerts/judikt_security_finding.json).
+The request requires `Authorization: Bearer <OIDC access token>`. The token's mapped Argus role must include `ingest_signal`: `ingester` (signals only, used by Alertmanager and Judikt), `operator`, or `admin`. The reader accepts Alertmanager's v4 webhook payload, ignores unknown fields, and caps the body at 8 MiB. Resolved alerts update the open incident they belong to and never create one; the response's `correlation` block reports `resolved_alerts`, `unmatched_resolved_alerts`, and `truncated_alerts`. Judikt places its dedupe key in `alerts[0].fingerprint`, maps risk to Argus severity, labels the source as `judikt`, and forwards hashes instead of caller arguments, model/tool results, tokens, or raw injected text. See the committed [producer-shaped payload](../demo/alerts/judikt_security_finding.json).
 
 Argus responds with `202 Accepted` and the normal ingestion envelope:
 
@@ -64,7 +64,7 @@ Argus responds with `202 Accepted` and the normal ingestion envelope:
 }
 ```
 
-An outbox retry with the same fingerprint and within the grouping window returns the existing incident ID while appending another signal and timeline event. RCA generation is explicit: call `POST /v1/incidents/{incident_id}/rca/generate` using an identity with `generate_rca`. See [Judikt Finding Ingestion](integrations/judikt.md) for setup, field mapping, security boundaries, and integration evidence.
+An outbox retry with the same fingerprint, while that alert is still firing or within the grouping window, returns the existing incident ID while appending another signal and timeline event. RCA generation is explicit: call `POST /v1/incidents/{incident_id}/rca/generate` using an identity with `generate_rca`. See [Judikt Finding Ingestion](integrations/judikt.md) for setup, field mapping, security boundaries, and integration evidence.
 
 Approval decision body:
 
@@ -123,3 +123,7 @@ Alert ingestion returns both root incidents and batch-local correlation statisti
   }
 }
 ```
+
+## Conflicts
+
+`POST /v1/incidents/{id}/ack` and `/resolve` return `409` when the incident lifecycle does not allow the transition from its current status, and `404` for an unknown incident. `POST /v1/remediations/{id}/execute` returns `409` for a resolved or cancelled incident, and `/cancel` returns `409` when the remediation changed state (for example a worker claimed it) before the cancel applied.

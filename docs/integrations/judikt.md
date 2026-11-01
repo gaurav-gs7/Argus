@@ -18,7 +18,7 @@ Judikt and Verdikt have different roles:
 | Method | `POST` |
 | Argus path | `/v1/alerts/alertmanager` |
 | Authentication | OIDC/JWT bearer access token |
-| Required Argus permission | `ingest_signal` |
+| Required Argus permission | `ingest_signal` (map the Judikt client to the `ingester` role) |
 | Accepted v1 roles | `operator`, `admin` |
 | Content type | `application/json` |
 | Success status | `202 Accepted` |
@@ -51,7 +51,7 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/alerts/alertmanager \
   --data-binary @demo/alerts/judikt_security_finding.json
 ```
 
-The response contains the incident ID required by the RCA endpoint. Repeating the request within the grouping window returns the same incident ID.
+The response contains the incident ID required by the RCA endpoint. Repeating the request while the finding is open (or within the grouping window) returns the same incident ID.
 
 ## Field Mapping
 
@@ -91,7 +91,7 @@ Finding ingestion does not automatically invoke RCA or remediation. An operator 
 
 ## Retry And Privacy Semantics
 
-Judikt retries failed delivery from its durable outbox. Within Argus's grouping window, the same fingerprint reuses the open incident. Argus still appends each accepted delivery to `signals` and `incident_timeline_events`, preserving retry-visible evidence without creating duplicate incidents.
+Judikt retries failed delivery from its durable outbox. While the finding's incident is open and the alert is still firing, or within Argus's grouping window, the same fingerprint reuses that incident. Argus still appends each accepted delivery to `signals` and `incident_timeline_events`, preserving retry-visible evidence without creating duplicate incidents.
 
 Judikt does not forward raw caller tokens, OAuth credentials, tool arguments, tool results, denial reasons, or injected text. It forwards SHA-256 hashes and bounded metadata. Argus persists those labels and annotations as alert evidence. Neither hash values nor labels should be treated as proof of source truth; they remain producer-supplied evidence under the trust boundary described in [Threat Model And Explicit Limitations](../threat-model.md).
 
