@@ -98,26 +98,47 @@ func (m *ServiceManager) IngestAlertmanager(ctx context.Context, payload Alertma
 }
 
 func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, payload AlertmanagerWebhook, actor string) (IngestionResult, error) {
-	unlock, err := m.store.LockIncidentIngestion(ctx)
+	var result IngestionResult
+	// One transaction for the whole delivery: the ingestion lock, every
+	// incident/signal/timeline write, and their audit entries commit together
+	// or not at all, so a failure never leaves partial incident context and
+	// Alertmanager's retry starts from a clean state.
+	err := m.store.InTx(ctx, func(tx *Store) error {
+		if err := tx.LockIncidentIngestion(ctx); err != nil {
+			return err
+		}
+		var err error
+		result, err = m.ingest(ctx, tx, payload, actor)
+		return err
+	})
 	if err != nil {
 		return IngestionResult{}, err
 	}
-	defer unlock()
+	return result, nil
+}
 
-	alerts, err := m.normalizeAlerts(ctx, payload)
+func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload AlertmanagerWebhook, actor string) (IngestionResult, error) {
+	writeAudit := func(entry audit.Entry) error {
+		if err := audit.WriteTx(ctx, tx.Tx(), entry); err != nil {
+			return fmt.Errorf("audit %s: %w", entry.Action, err)
+		}
+		return nil
+	}
+
+	alerts, err := m.normalizeAlerts(ctx, tx, payload)
 	if err != nil {
 		return IngestionResult{}, err
 	}
 	if len(alerts) == 0 {
-		return IngestionResult{Incidents: []Incident{}}, nil
+		return IngestionResult{Incidents: []Incident{}, Stats: IngestionStats{TruncatedAlerts: payload.TruncatedAlerts}}, nil
 	}
-	dependencies, err := m.store.ListServiceDependencies(ctx)
+	dependencies, err := tx.ListServiceDependencies(ctx)
 	if err != nil {
 		return IngestionResult{}, err
 	}
 	graph := topology.New(dependencies)
 	groups := topologyGroupsByEnvironment(graph, alerts)
-	openIncidents, err := m.store.ListOpenIncidents(ctx, m.groupingWindow)
+	openIncidents, err := tx.ListOpenIncidents(ctx, m.groupingWindow)
 	if err != nil {
 		return IngestionResult{}, err
 	}
@@ -130,13 +151,13 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 			continue
 		}
 		rootAlert := rootAlertForGroup(groupAlerts, group.Root)
-		incident, created, promoted, err := m.findOrCreateTopologyIncident(ctx, graph, group, rootAlert, openIncidents)
+		incident, created, promoted, err := m.findOrCreateTopologyIncident(ctx, tx, graph, group, rootAlert, openIncidents)
 		if err != nil {
 			return IngestionResult{}, err
 		}
 		rootInferred := group.Inferred
 		if !created && !promoted {
-			analysis, err := m.store.GetIncidentTopology(ctx, incident.ID)
+			analysis, err := tx.GetIncidentTopology(ctx, incident.ID)
 			if err != nil {
 				return IngestionResult{}, err
 			}
@@ -150,7 +171,7 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 			stats.ObservedRoots++
 		}
 		if created {
-			_ = m.auditor.Write(ctx, audit.Entry{
+			if err := writeAudit(audit.Entry{
 				ActorID:      actor,
 				ActorType:    "system",
 				Action:       "incident.detected",
@@ -164,10 +185,12 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 					"root_inferred":     rootInferred,
 					"affected_services": group.Members,
 				},
-			})
+			}); err != nil {
+				return IngestionResult{}, err
+			}
 		}
 		if promoted {
-			_ = m.auditor.Write(ctx, audit.Entry{
+			if err := writeAudit(audit.Entry{
 				ActorID:      actor,
 				ActorType:    "system",
 				Action:       "incident.root_promoted",
@@ -177,7 +200,9 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 					"root_service":  incident.Service,
 					"root_inferred": rootInferred,
 				},
-			})
+			}); err != nil {
+				return IngestionResult{}, err
+			}
 		}
 
 		for _, normalized := range groupAlerts {
@@ -190,12 +215,12 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 				}
 			}
 			suppressed := normalized.service != incident.Service
-			if err := m.attachTopologyAlert(ctx, *incident, normalized, path, rootInferred, suppressed); err != nil {
+			if err := m.attachTopologyAlert(ctx, tx, *incident, normalized, path, rootInferred, suppressed); err != nil {
 				return IngestionResult{}, err
 			}
 			if suppressed {
 				stats.SuppressedAlertCount++
-				_ = m.auditor.Write(ctx, audit.Entry{
+				if err := writeAudit(audit.Entry{
 					ActorID:      actor,
 					ActorType:    "system",
 					Action:       "incident.downstream_alert_suppressed",
@@ -207,7 +232,9 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 						"root_service":     incident.Service,
 						"dependency_path":  path.Services,
 					},
-				})
+				}); err != nil {
+					return IngestionResult{}, err
+				}
 			}
 		}
 		incidentsOut = append(incidentsOut, *incident)
@@ -228,11 +255,11 @@ type normalizedAlert struct {
 	dedupeKey     string
 }
 
-func (m *ServiceManager) normalizeAlerts(ctx context.Context, payload AlertmanagerWebhook) ([]normalizedAlert, error) {
+func (m *ServiceManager) normalizeAlerts(ctx context.Context, store *Store, payload AlertmanagerWebhook) ([]normalizedAlert, error) {
 	alerts := make([]normalizedAlert, 0, len(payload.Alerts))
 	for _, alert := range payload.Alerts {
 		service := firstNonEmpty(alert.Labels["service"], payload.CommonLabels["service"], "unknown-service")
-		serviceRecord, err := m.store.EnsureService(ctx, service)
+		serviceRecord, err := store.EnsureService(ctx, service)
 		if err != nil {
 			return nil, err
 		}
@@ -273,13 +300,14 @@ func (m *ServiceManager) normalizeAlerts(ctx context.Context, payload Alertmanag
 
 func (m *ServiceManager) findOrCreateTopologyIncident(
 	ctx context.Context,
+	store *Store,
 	graph *topology.Graph,
 	group topology.Group,
 	root normalizedAlert,
 	open []Incident,
 ) (*Incident, bool, bool, error) {
 	if root.service == group.Root {
-		exact, err := m.store.FindOpenByDedupeKey(ctx, root.dedupeKey, m.groupingWindow)
+		exact, err := store.FindOpenByDedupeKey(ctx, root.dedupeKey, m.groupingWindow)
 		if err != nil {
 			return nil, false, false, err
 		}
@@ -292,7 +320,7 @@ func (m *ServiceManager) findOrCreateTopologyIncident(
 		if !promote || existing.Service == group.Root {
 			return existing, false, false, nil
 		}
-		promoted, err := m.store.PromoteIncidentRoot(
+		promoted, err := store.PromoteIncidentRoot(
 			ctx, existing.ID, group.Root, rootTitle(group, root), root.severity,
 			rootDedupeKey(group, root), rootFingerprint(group, root), rootSummary(group, root), root.alert.StartsAt,
 		)
@@ -302,7 +330,7 @@ func (m *ServiceManager) findOrCreateTopologyIncident(
 		return &promoted, false, true, nil
 	}
 
-	created, err := m.store.CreateAlertIncident(
+	created, err := store.CreateAlertIncident(
 		ctx, rootTitle(group, root), group.Root, root.severity, rootDedupeKey(group, root),
 		rootFingerprint(group, root), rootSummary(group, root), root.alert.StartsAt,
 	)
@@ -314,13 +342,14 @@ func (m *ServiceManager) findOrCreateTopologyIncident(
 
 func (m *ServiceManager) attachTopologyAlert(
 	ctx context.Context,
+	store *Store,
 	incident Incident,
 	normalized normalizedAlert,
 	path topology.Path,
 	rootInferred bool,
 	suppressed bool,
 ) error {
-	if err := m.store.AddSignal(ctx, Signal{
+	if err := store.AddSignal(ctx, Signal{
 		IncidentID: incident.ID,
 		ServiceID:  normalized.serviceRecord.ID,
 		Source:     "alertmanager",
@@ -354,7 +383,7 @@ func (m *ServiceManager) attachTopologyAlert(
 			normalized.alertName, normalized.service, incident.Service,
 		)
 	}
-	return m.store.AddTimelineEvent(ctx, TimelineEvent{
+	return store.AddTimelineEvent(ctx, TimelineEvent{
 		IncidentID: incident.ID,
 		EventType:  eventType,
 		Source:     "alertmanager",

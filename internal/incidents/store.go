@@ -12,34 +12,63 @@ import (
 	"github.com/gauravgs7/argus/internal/topology"
 )
 
+// querier is satisfied by both *sql.DB and *sql.Tx.
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 type Store struct {
 	db *sql.DB
+	q  querier
+	tx *sql.Tx
 }
 
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	return &Store{db: db, q: db}
 }
 
-func (s *Store) LockIncidentIngestion(ctx context.Context) (func(), error) {
-	conn, err := s.db.Conn(ctx)
+// InTx runs fn against a store bound to one transaction and commits only if fn
+// succeeds. Calling InTx on a store that is already transaction-bound reuses
+// the same transaction.
+func (s *Store) InTx(ctx context.Context, fn func(tx *Store) error) error {
+	if s.tx != nil {
+		return fn(s)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("reserve topology ingestion connection: %w", err)
+		return fmt.Errorf("begin transaction: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext('argus_topology_ingestion'))`); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("acquire topology ingestion lock: %w", err)
+	if err := fn(&Store{db: s.db, q: tx, tx: tx}); err != nil {
+		_ = tx.Rollback()
+		return err
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
 
-	return func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = conn.ExecContext(releaseCtx, `SELECT pg_advisory_unlock(hashtext('argus_topology_ingestion'))`)
-		_ = conn.Close()
-	}, nil
+// Tx returns the bound transaction, or nil for a pool-backed store.
+func (s *Store) Tx() *sql.Tx { return s.tx }
+
+// LockIncidentIngestion serializes topology ingestion for the rest of the
+// current transaction. It must run on a transaction-bound store: the lock and
+// every query that follows share one connection, so a lock holder can never be
+// starved of connections by callers queued behind the lock.
+func (s *Store) LockIncidentIngestion(ctx context.Context) error {
+	if s.tx == nil {
+		return fmt.Errorf("incident ingestion lock requires a transaction")
+	}
+	if _, err := s.tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('argus_topology_ingestion'))`); err != nil {
+		return fmt.Errorf("acquire topology ingestion lock: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) EnsureService(ctx context.Context, name string) (Service, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT id, name, COALESCE(owner, ''), tier, environment, slo_availability, slo_latency_p95_ms, runbook_id, created_at
 		FROM services WHERE name = $1
 	`, name)
@@ -60,7 +89,7 @@ func (s *Store) EnsureService(ctx context.Context, name string) (Service, error)
 		Environment: "local",
 		CreatedAt:   time.Now().UTC(),
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := s.q.ExecContext(ctx, `
 		INSERT INTO services (id, name, owner, tier, environment, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6)
 	`, svc.ID, svc.Name, svc.Owner, svc.Tier, svc.Environment, svc.CreatedAt); err != nil {
@@ -98,7 +127,7 @@ func (s *Store) UpsertServiceDependency(ctx context.Context, req ServiceDependen
 		Criticality:    req.Criticality,
 		CreatedAt:      time.Now().UTC(),
 	}
-	err = s.db.QueryRowContext(ctx, `
+	err = s.q.QueryRowContext(ctx, `
 		INSERT INTO service_dependencies (
 			id, service_id, depends_on_service_id, dependency_type, criticality, created_at
 		) VALUES ($1,$2,$3,$4,$5,$6)
@@ -115,7 +144,7 @@ func (s *Store) UpsertServiceDependency(ctx context.Context, req ServiceDependen
 }
 
 func (s *Store) ListServiceDependencies(ctx context.Context) ([]topology.Dependency, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT d.id, d.service_id, service.name, d.depends_on_service_id, dependency.name,
 		       d.dependency_type, d.criticality, d.created_at
 		FROM service_dependencies d
@@ -165,7 +194,7 @@ func (s *Store) CreateManualIncident(ctx context.Context, req ManualIncidentRequ
 		UpdatedAt:   now,
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.q.ExecContext(ctx, `
 		INSERT INTO incidents (
 			id, title, service_id, severity, status, dedupe_key, fingerprint,
 			started_at, detected_at, summary, created_at, updated_at
@@ -182,7 +211,7 @@ func (s *Store) CreateManualIncident(ctx context.Context, req ManualIncidentRequ
 }
 
 func (s *Store) FindOpenByDedupeKey(ctx context.Context, dedupeKey string, window time.Duration) (*Incident, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT i.id, i.title, i.service_id, s.name, i.severity, i.status, i.dedupe_key, i.fingerprint,
 		       i.started_at, i.detected_at, i.resolved_at, i.summary, i.created_at, i.updated_at
 		FROM incidents i
@@ -210,7 +239,7 @@ func (s *Store) FindOpenByDedupeKey(ctx context.Context, dedupeKey string, windo
 }
 
 func (s *Store) ListOpenIncidents(ctx context.Context, window time.Duration) ([]Incident, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
 		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
 		       i.created_at, i.updated_at
@@ -249,7 +278,7 @@ func (s *Store) PromoteIncidentRoot(
 	if err != nil {
 		return Incident{}, err
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := s.q.ExecContext(ctx, `
 		UPDATE incidents
 		SET service_id = $2,
 		    title = $3,
@@ -289,7 +318,7 @@ func (s *Store) CreateAlertIncident(ctx context.Context, title, serviceName, sev
 		UpdatedAt:   now,
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.q.ExecContext(ctx, `
 		INSERT INTO incidents (
 			id, title, service_id, severity, status, dedupe_key, fingerprint,
 			started_at, detected_at, summary, created_at, updated_at
@@ -312,7 +341,7 @@ func (s *Store) AddSignal(ctx context.Context, signal Signal) error {
 		signal.CreatedAt = time.Now().UTC()
 	}
 	bodyJSON, _ := json.Marshal(signal.Body)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		INSERT INTO signals (
 			id, incident_id, service_id, source, signal_type, severity, name, body, observed_at, created_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -331,7 +360,7 @@ func (s *Store) AddTimelineEvent(ctx context.Context, event TimelineEvent) error
 		event.CreatedAt = time.Now().UTC()
 	}
 	evidenceJSON, _ := json.Marshal(event.Evidence)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		INSERT INTO incident_timeline_events (
 			id, incident_id, event_type, source, summary, evidence, confidence, occurred_at, created_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -343,7 +372,7 @@ func (s *Store) AddTimelineEvent(ctx context.Context, event TimelineEvent) error
 }
 
 func (s *Store) ListIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
 		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
 		       i.created_at, i.updated_at
@@ -372,7 +401,7 @@ func (s *Store) ListIncidents(ctx context.Context) ([]Incident, error) {
 }
 
 func (s *Store) GetIncident(ctx context.Context, incidentID string) (Incident, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
 		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
 		       i.created_at, i.updated_at
@@ -393,7 +422,7 @@ func (s *Store) GetIncident(ctx context.Context, incidentID string) (Incident, e
 }
 
 func (s *Store) UpdateIncidentStatus(ctx context.Context, incidentID, status string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		UPDATE incidents
 		SET status = $2, updated_at = now(),
 		    resolved_at = CASE WHEN $2 = 'resolved' THEN now() ELSE resolved_at END
@@ -406,7 +435,7 @@ func (s *Store) UpdateIncidentStatus(ctx context.Context, incidentID, status str
 }
 
 func (s *Store) ListSignals(ctx context.Context, incidentID string) ([]Signal, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT id, incident_id, service_id, source, signal_type, severity, name, body, observed_at, created_at
 		FROM signals
 		WHERE incident_id = $1
@@ -431,7 +460,7 @@ func (s *Store) ListSignals(ctx context.Context, incidentID string) ([]Signal, e
 }
 
 func (s *Store) ListTimeline(ctx context.Context, incidentID string) ([]TimelineEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT id, incident_id, event_type, source, summary, evidence, confidence, occurred_at, created_at
 		FROM incident_timeline_events
 		WHERE incident_id = $1
@@ -465,7 +494,7 @@ func (s *Store) GetIncidentTopology(ctx context.Context, incidentID string) (Inc
 		RootService:      incident.Service,
 		AffectedServices: []string{incident.Service},
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT COALESCE(service.name, '')
 		FROM signals signal
 		LEFT JOIN services service ON service.id = signal.service_id
@@ -541,7 +570,7 @@ func (s *Store) SaveRCAReport(ctx context.Context, report RCAReport) error {
 	}
 	itemsJSON, _ := json.Marshal(report.EvidenceItems)
 	scoreJSON, _ := json.Marshal(report.Score)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		INSERT INTO rca_reports (
 			id, incident_id, deterministic_summary, llm_summary, primary_hypothesis,
 			contributing_factors, evidence, confidence, model_backend, model_name, topology_analysis,
@@ -557,7 +586,7 @@ func (s *Store) SaveRCAReport(ctx context.Context, report RCAReport) error {
 }
 
 func (s *Store) GetLatestRCAReport(ctx context.Context, incidentID string) (RCAReport, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT id, incident_id, deterministic_summary, COALESCE(llm_summary, ''), COALESCE(primary_hypothesis, ''),
 		       contributing_factors, evidence, COALESCE(confidence, 0), COALESCE(model_backend, ''), COALESCE(model_name, ''),
 		       topology_analysis, evidence_items, score_breakdown, created_at
@@ -598,7 +627,7 @@ func (s *Store) CreateRemediation(ctx context.Context, action RemediationAction)
 	policyJSON, _ := json.Marshal(action.PolicyDecision)
 	parametersJSON := marshalJSONObject(action.Parameters)
 	resultJSON, _ := json.Marshal(action.Result)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		INSERT INTO remediation_actions (
 			id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 			proposed_by, approved_by, policy_decision, dry_run, attempt, max_attempts,
@@ -614,7 +643,7 @@ func (s *Store) CreateRemediation(ctx context.Context, action RemediationAction)
 }
 
 func (s *Store) ListRemediations(ctx context.Context, incidentID string) ([]RemediationAction, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
 		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
@@ -647,7 +676,7 @@ func (s *Store) ListRemediations(ctx context.Context, incidentID string) ([]Reme
 }
 
 func (s *Store) GetRemediation(ctx context.Context, remediationID string) (RemediationAction, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
 		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
@@ -664,7 +693,7 @@ func (s *Store) GetRemediation(ctx context.Context, remediationID string) (Remed
 
 func (s *Store) CountRecentSimilarRemediations(ctx context.Context, incidentID, actionType, target string, parameters map[string]any) (int, error) {
 	parametersJSON := marshalJSONObject(parameters)
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM remediation_actions
 		WHERE incident_id = $1
@@ -682,7 +711,7 @@ func (s *Store) CountRecentSimilarRemediations(ctx context.Context, incidentID, 
 
 func (s *Store) FindActiveRemediationByAction(ctx context.Context, incidentID, actionType, target string, parameters map[string]any) (*RemediationAction, error) {
 	parametersJSON := marshalJSONObject(parameters)
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT id, incident_id, action_type, target, parameters, status, risk, idempotency_key,
 		       proposed_by, COALESCE(approved_by, ''), policy_decision, dry_run, attempt,
 		       max_attempts, queued_at, started_at, completed_at, result, COALESCE(error, ''), created_at
@@ -708,7 +737,7 @@ func (s *Store) FindActiveRemediationByAction(ctx context.Context, incidentID, a
 
 func (s *Store) CountFailedRemediations(ctx context.Context, incidentID, actionType, target string, parameters map[string]any) (int, error) {
 	parametersJSON := marshalJSONObject(parameters)
-	row := s.db.QueryRowContext(ctx, `
+	row := s.q.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM remediation_actions
 		WHERE incident_id = $1
@@ -725,7 +754,7 @@ func (s *Store) CountFailedRemediations(ctx context.Context, incidentID, actionT
 }
 
 func (s *Store) UpdateRemediationApproval(ctx context.Context, remediationID, status, approvedBy string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = $2, approved_by = NULLIF($3, '')
 		WHERE id = $1
@@ -737,7 +766,7 @@ func (s *Store) UpdateRemediationApproval(ctx context.Context, remediationID, st
 }
 
 func (s *Store) MarkRemediationQueued(ctx context.Context, remediationID string, dryRun bool) error {
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = 'queued', queued_at = now(), dry_run = $2
 		WHERE id = $1 AND status = 'approved'
@@ -756,7 +785,7 @@ func (s *Store) MarkRemediationQueued(ctx context.Context, remediationID string,
 }
 
 func (s *Store) ReleaseRemediationQueueReservation(ctx context.Context, remediationID string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = 'approved', queued_at = NULL
 		WHERE id = $1 AND status = 'queued'
@@ -768,7 +797,7 @@ func (s *Store) ReleaseRemediationQueueReservation(ctx context.Context, remediat
 }
 
 func (s *Store) MarkRemediationRunning(ctx context.Context, remediationID string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = 'running', started_at = now()
 		WHERE id = $1
@@ -781,7 +810,7 @@ func (s *Store) MarkRemediationRunning(ctx context.Context, remediationID string
 
 func (s *Store) CompleteRemediation(ctx context.Context, remediationID, status string, result map[string]any, execErr string) error {
 	resultJSON, _ := json.Marshal(result)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = $2, completed_at = now(), result = $3, error = NULLIF($4, '')
 		WHERE id = $1
@@ -793,7 +822,7 @@ func (s *Store) CompleteRemediation(ctx context.Context, remediationID, status s
 }
 
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT id, name, COALESCE(owner, ''), tier, environment, slo_availability, slo_latency_p95_ms, runbook_id, created_at
 		FROM services
 		ORDER BY name
@@ -815,7 +844,7 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 }
 
 func (s *Store) ListRunbooks(ctx context.Context) ([]map[string]any, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.q.QueryContext(ctx, `
 		SELECT id, service_id, title, path, version, created_at
 		FROM runbooks
 		ORDER BY created_at DESC
@@ -846,7 +875,7 @@ func (s *Store) ListRunbooks(ctx context.Context) ([]map[string]any, error) {
 }
 
 func (s *Store) UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname string, at time.Time, supportedActions []string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.q.ExecContext(ctx, `
 		INSERT INTO worker_heartbeats (
 			worker_id, hostname, version, supported_actions, running_jobs, last_heartbeat_at, status
 		) VALUES ($1,$2,$3,$4,$5,$6,$7)
