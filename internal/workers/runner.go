@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -46,14 +47,30 @@ func NewRunner(store *incidents.Store, auditor *audit.Service, queueClient *queu
 	}
 }
 
+const (
+	remediationStream    = "ARGUS_REMEDIATION"
+	workerQueueGroup     = "argus-workers"
+	legacyWorkerConsumer = "argus-worker"
+)
+
 func (r *Runner) Start(ctx context.Context, workerID string) error {
 	if err := r.queue.EnsureStreams(); err != nil {
 		return err
 	}
 
-	_, err := r.queue.JetStream().Subscribe("remediation.execute", func(msg *nats.Msg) {
+	js := r.queue.JetStream()
+	// The original single-subscriber consumer cannot be shared. Remove it so
+	// it stops accumulating pending messages; the queue-group consumer below
+	// starts from the stream head and the status gate in handleMessage skips
+	// anything already handled.
+	if err := js.DeleteConsumer(remediationStream, legacyWorkerConsumer); err != nil && !errors.Is(err, nats.ErrConsumerNotFound) {
+		return fmt.Errorf("remove legacy worker consumer: %w", err)
+	}
+	// Every worker joins the same deliver group, so replicas share the work
+	// and each message goes to one of them.
+	_, err := js.QueueSubscribe("remediation.execute", workerQueueGroup, func(msg *nats.Msg) {
 		_ = r.handleMessage(ctx, msg)
-	}, nats.Durable("argus-worker"), nats.ManualAck(), nats.AckExplicit())
+	}, nats.Durable(workerQueueGroup), nats.ManualAck(), nats.AckExplicit())
 	if err != nil {
 		return fmt.Errorf("subscribe remediation.execute: %w", err)
 	}

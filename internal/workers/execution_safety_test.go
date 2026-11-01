@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -194,4 +195,114 @@ func TestStoreTransitionsAreConditional(t *testing.T) {
 		t.Fatal("cancelling a succeeded remediation should fail")
 	}
 	_ = errors.Is(err, remediationpkg.ErrStateChanged)
+}
+
+// countingHandler records which runner executed each remediation.
+type countingHandler struct {
+	runner string
+	mu     *sync.Mutex
+	seen   map[string][]string
+}
+
+func (h countingHandler) Name() string                               { return "test_counter" }
+func (h countingHandler) Validate(incidents.RemediationAction) error { return nil }
+func (h countingHandler) DryRun(ctx context.Context, req incidents.RemediationAction) (map[string]any, error) {
+	return h.Execute(ctx, req)
+}
+func (h countingHandler) Execute(_ context.Context, req incidents.RemediationAction) (map[string]any, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seen[req.ID] = append(h.seen[req.ID], h.runner)
+	return map[string]any{"runner": h.runner}, nil
+}
+
+// values-production.yaml runs worker.replicas: 2. Both replicas must
+// subscribe, share the work, and execute each remediation exactly once.
+func TestWorkerReplicasShareWorkExactlyOnce(t *testing.T) {
+	url := os.Getenv("ARGUS_TEST_NATS_URL")
+	if url == "" {
+		t.Skip("ARGUS_TEST_NATS_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	env := newSafetyEnv(t, ctx)
+
+	// Drain anything left in the stream by earlier runs so the consumer
+	// starts from a known point.
+	publisher, err := queue.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publisher.Close()
+	if err := publisher.EnsureStreams(); err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.JetStream().PurgeStream("ARGUS_REMEDIATION"); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	var exited atomic.Int32
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	for _, name := range []string{"replica-a", "replica-b"} {
+		client, err := queue.Connect(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		runner := NewRunner(env.store, env.auditor, client, safetyMetrics, countingHandler{runner: name, mu: &mu, seen: seen})
+		go func() {
+			if err := runner.Start(runCtx, name); err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("%s exited: %v", name, err)
+				exited.Add(1)
+			}
+		}()
+		time.Sleep(300 * time.Millisecond)
+	}
+	if exited.Load() != 0 {
+		t.FailNow()
+	}
+
+	const jobs = 30
+	ids := make([]string, 0, jobs)
+	for range jobs {
+		rem := env.queuedRemediation(t, ctx, "test_counter")
+		ids = append(ids, rem.ID)
+		if err := publisher.Publish(ctx, "remediation.execute", queue.Event{EventType: "remediation.execute", Payload: map[string]any{"remediation_id": rem.ID}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		done := 0
+		for _, id := range ids {
+			if rem, err := env.store.GetRemediation(ctx, id); err == nil && rem.Status == remediationpkg.StateSucceeded {
+				done++
+			}
+		}
+		if done == jobs {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/%d remediations completed", done, jobs)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	perReplica := map[string]int{}
+	for _, id := range ids {
+		if len(seen[id]) != 1 {
+			t.Fatalf("remediation %s executed %d times: %v", id, len(seen[id]), seen[id])
+		}
+		perReplica[seen[id][0]]++
+	}
+	if len(perReplica) != 2 {
+		t.Fatalf("work was not shared across replicas: %v", perReplica)
+	}
+	t.Logf("executions per replica: %v", perReplica)
 }
