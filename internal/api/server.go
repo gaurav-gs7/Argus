@@ -136,7 +136,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	default:
 		executor = remediation.NewLocalExecutor(queueClient)
 	}
-	remediationService := remediation.NewService(store, auditor, policy.NewEngine(), queueClient, executor, metrics, approvalService)
+	remediationService := remediation.NewService(store, auditor, policy.NewEngineForEnvironments(cfg.RemediationEnvironments), queueClient, executor, metrics, approvalService)
 
 	server := &Server{
 		cfg:                cfg,

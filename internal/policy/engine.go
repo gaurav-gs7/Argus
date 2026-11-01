@@ -1,6 +1,9 @@
 package policy
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/gauravgs7/argus/internal/actions"
 )
 
@@ -33,12 +36,29 @@ type Decision struct {
 	RequiresApproval bool   `json:"requires_approval"`
 	Reason           string `json:"reason"`
 	MaxAttempts      int    `json:"max_attempts"`
+	// Risk is the effective risk the decision was made on: the stricter of
+	// the action catalog's class and the proposal's.
+	Risk string `json:"risk"`
 }
 
-type Engine struct{}
+type Engine struct {
+	environments map[string]struct{}
+}
 
+// NewEngine permits remediation only in the "local" environment.
 func NewEngine() *Engine {
-	return &Engine{}
+	return NewEngineForEnvironments([]string{"local"})
+}
+
+// NewEngineForEnvironments permits remediation in the listed environments.
+func NewEngineForEnvironments(environments []string) *Engine {
+	allowed := map[string]struct{}{}
+	for _, environment := range environments {
+		if environment = strings.TrimSpace(environment); environment != "" {
+			allowed[environment] = struct{}{}
+		}
+	}
+	return &Engine{environments: allowed}
 }
 
 func (e *Engine) Evaluate(input Input) Decision {
@@ -49,12 +69,15 @@ func (e *Engine) Evaluate(input Input) Decision {
 		return decision
 	}
 	if input.Actor.Role == "" {
-		input.Actor.Role = "operator"
-	}
-	if input.Incident.Environment != "local" {
-		decision.Reason = "Only local environment is enabled in v1"
+		decision.Reason = "Actor role is missing"
 		return decision
 	}
+	if _, ok := e.environments[input.Incident.Environment]; !ok {
+		decision.Reason = fmt.Sprintf("Remediation is not enabled for environment %q", input.Incident.Environment)
+		return decision
+	}
+	input.Remediation.Risk = actions.EffectiveRisk(input.Remediation.Type, input.Remediation.Risk)
+	decision.Risk = input.Remediation.Risk
 	if input.Remediation.Risk == "high" {
 		decision.Reason = "High-risk actions are blocked"
 		return decision

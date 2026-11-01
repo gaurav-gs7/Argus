@@ -646,7 +646,7 @@ func (s *Service) SuggestRemediations(ctx context.Context, incidentID string) (m
 			"title":       incident.Title,
 			"service":     incident.Service,
 			"severity":    incident.Severity,
-			"environment": "local",
+			"environment": incident.Environment,
 		},
 		"evidence":                 result.Evidence,
 		"deterministic_candidates": result.Candidates,

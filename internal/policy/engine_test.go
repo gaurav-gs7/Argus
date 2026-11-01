@@ -100,3 +100,59 @@ func TestEvaluateTypedActionBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func mediumRestart() Input {
+	var input Input
+	input.Actor.Role = "operator"
+	input.Incident.Environment = "local"
+	input.Remediation.Type = "restart_service"
+	input.Remediation.Risk = "medium"
+	return input
+}
+
+func TestEvaluateDeniesMissingRole(t *testing.T) {
+	input := mediumRestart()
+	input.Actor.Role = ""
+	if decision := NewEngine().Evaluate(input); decision.Allow || decision.Reason != "Actor role is missing" {
+		t.Fatalf("missing role was not denied: %+v", decision)
+	}
+}
+
+func TestEvaluateUsesIncidentEnvironment(t *testing.T) {
+	input := mediumRestart()
+	input.Incident.Environment = "production"
+	if decision := NewEngine().Evaluate(input); decision.Allow {
+		t.Fatalf("production remediation allowed by the default engine: %+v", decision)
+	}
+	if decision := NewEngineForEnvironments([]string{" local", "production "}).Evaluate(input); !decision.Allow || !decision.RequiresApproval {
+		t.Fatalf("explicitly enabled environment was denied: %+v", decision)
+	}
+	input.Incident.Environment = ""
+	if decision := NewEngine().Evaluate(input); decision.Allow {
+		t.Fatalf("empty environment allowed: %+v", decision)
+	}
+}
+
+func TestEvaluateRiskComesFromCatalog(t *testing.T) {
+	input := mediumRestart()
+	input.Remediation.Type = "restart_pod"
+	input.Remediation.Target = "local/payments-api"
+	input.Remediation.Risk = "low" // proposal tries to skip approval
+	decision := NewEngine().Evaluate(input)
+	if !decision.Allow || !decision.RequiresApproval || decision.Risk != "medium" {
+		t.Fatalf("catalog risk not enforced: %+v", decision)
+	}
+
+	input.Remediation.Risk = ""
+	if decision := NewEngine().Evaluate(input); decision.Risk != "medium" || !decision.RequiresApproval {
+		t.Fatalf("empty requested risk should use the catalog: %+v", decision)
+	}
+	input.Remediation.Risk = "high"
+	if decision := NewEngine().Evaluate(input); decision.Allow {
+		t.Fatalf("a proposal may raise risk to high and must then be blocked: %+v", decision)
+	}
+	input.Remediation.Risk = "spicy"
+	if decision := NewEngine().Evaluate(input); decision.Allow {
+		t.Fatalf("unknown risk allowed: %+v", decision)
+	}
+}

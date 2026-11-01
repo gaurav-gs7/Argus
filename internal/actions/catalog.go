@@ -39,6 +39,45 @@ var (
 	}
 )
 
+// risks is the authoritative risk class of each action. A proposal may ask
+// for a higher class but never a lower one.
+var risks = map[string]string{
+	CollectDiagnostics:       "low",
+	RestartService:           "medium",
+	RollbackConfig:           "medium",
+	ReloadNginx:              "medium",
+	ClearRedisKeyspace:       "medium",
+	DrainPostgresConnections: "medium",
+	ScaleWorkerSimulation:    "medium",
+	RevertFeatureFlag:        "medium",
+	DisableBadRoute:          "medium",
+	RestartPod:               "medium",
+	ResizeConnectionPool:     "medium",
+	ToggleFeatureFlag:        "medium",
+	PurgeCache:               "medium",
+}
+
+var riskRank = map[string]int{"low": 1, "medium": 2, "high": 3}
+
+// Risk returns the catalog risk for an action, or "" if it is unregistered.
+func Risk(action string) string { return risks[action] }
+
+// EffectiveRisk is the stricter of the catalog risk and a requested risk. An
+// unrecognised requested risk is returned as-is so policy can reject it.
+func EffectiveRisk(action, requested string) string {
+	catalog := risks[action]
+	if requested == "" {
+		return catalog
+	}
+	if _, ok := riskRank[requested]; !ok {
+		return requested
+	}
+	if riskRank[catalog] > riskRank[requested] {
+		return catalog
+	}
+	return requested
+}
+
 func IsRegistered(action string) bool {
 	_, ok := registered[action]
 	return ok

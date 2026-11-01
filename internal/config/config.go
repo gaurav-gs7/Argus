@@ -20,6 +20,7 @@ type Config struct {
 	LokiBearerToken            string
 	RCAProbeTimeout            time.Duration
 	AlertStaleAfter            time.Duration
+	RemediationEnvironments    []string
 	LogLevel                   string
 	OIDCIssuerURL              string
 	OIDCAudience               string
@@ -67,6 +68,7 @@ func Load() Config {
 		LokiBearerToken:            getenv("ARGUS_LOKI_BEARER_TOKEN", ""),
 		RCAProbeTimeout:            getduration("ARGUS_RCA_PROBE_TIMEOUT", 3*time.Second),
 		AlertStaleAfter:            getduration("ARGUS_ALERT_STALE_AFTER", 6*time.Hour),
+		RemediationEnvironments:    strings.Split(getenv("ARGUS_REMEDIATION_ENVIRONMENTS", "local"), ","),
 		LogLevel:                   strings.ToUpper(getenv("ARGUS_LOG_LEVEL", "INFO")),
 		OIDCIssuerURL:              strings.TrimRight(getenv("ARGUS_OIDC_ISSUER_URL", ""), "/"),
 		OIDCAudience:               getenv("ARGUS_OIDC_AUDIENCE", "argus-api"),

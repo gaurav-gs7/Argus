@@ -36,6 +36,15 @@ func NewService(store *incidents.Store, auditor *audit.Service, policyEngine *po
 	return &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor, approvals: approvalWorkflow}
 }
 
+func firstNonEmptyRisk(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return "medium"
+}
+
 func BuildIdempotencyKey(incidentID, actionType, target string, attempt int, parameters ...map[string]any) string {
 	base := fmt.Sprintf("%s_%s_%s_%d", incidentID, actionType, target, attempt)
 	if len(parameters) == 0 || len(parameters[0]) == 0 {
@@ -88,7 +97,7 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		input.Incident.ID = incident.ID
 		input.Incident.Severity = incident.Severity
 		input.Incident.Service = incident.Service
-		input.Incident.Environment = "local"
+		input.Incident.Environment = incident.Environment
 		input.Remediation.Type = candidate.ActionType
 		input.Remediation.Target = candidate.Target
 		input.Remediation.Risk = candidate.Risk
@@ -119,7 +128,7 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 			Target:         candidate.Target,
 			Parameters:     candidate.Parameters,
 			Status:         status,
-			Risk:           candidate.Risk,
+			Risk:           firstNonEmptyRisk(decision.Risk, candidate.Risk),
 			IdempotencyKey: BuildIdempotencyKey(incident.ID, candidate.ActionType, candidate.Target, attempt, candidate.Parameters),
 			ProposedBy:     actor,
 			PolicyDecision: map[string]any{
