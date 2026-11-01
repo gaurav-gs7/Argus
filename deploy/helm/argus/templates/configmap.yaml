@@ -18,6 +18,9 @@ data:
   ARGUS_APPROVAL_TIMEOUT: {{ .Values.controlPlane.approvalTimeout | quote }}
   ARGUS_APPROVAL_ESCALATE_AFTER: {{ .Values.controlPlane.approvalEscalateAfter | quote }}
   ARGUS_AI_SERVICE_URL: {{ default (printf "http://%s-ai:%v" (include "argus.fullname" .) .Values.ai.service.port) .Values.controlPlane.aiServiceURL | quote }}
+  ARGUS_PROMETHEUS_URL: {{ .Values.controlPlane.evidence.prometheusURL | quote }}
+  ARGUS_LOKI_URL: {{ .Values.controlPlane.evidence.lokiURL | quote }}
+  ARGUS_RCA_PROBE_TIMEOUT: {{ .Values.controlPlane.evidence.probeTimeout | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

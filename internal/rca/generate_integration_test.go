@@ -18,6 +18,17 @@ import (
 	"github.com/gauravgs7/argus/internal/telemetry"
 )
 
+var (
+	metricsOnce   sync.Once
+	sharedMetrics *telemetry.Metrics
+)
+
+// testMetrics registers Prometheus collectors once per test binary.
+func testMetrics() *telemetry.Metrics {
+	metricsOnce.Do(func() { sharedMetrics = telemetry.MustRegister() })
+	return sharedMetrics
+}
+
 // promAPI serves the Prometheus/Loki instant-query envelope, answering by
 // substring of the query.
 func promAPI(t *testing.T, path string, answers map[string]string) (*httptest.Server, *[]string) {
@@ -83,7 +94,7 @@ func TestGeneratePersistsQueriedEvidence(t *testing.T) {
 		evidence.Prometheus: evidence.NewPrometheus(prom.URL, "", prom.Client()),
 		evidence.Loki:       evidence.NewLoki(loki.URL, "", loki.Client()),
 	})
-	svc := NewService(store, "", "", telemetry.MustRegister(), collector)
+	svc := NewService(store, "", "", testMetrics(), collector)
 
 	report, candidates, err := svc.Generate(ctx, created[0].ID)
 	if err != nil {

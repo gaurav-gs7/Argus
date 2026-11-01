@@ -79,6 +79,9 @@ services:
       ARGUS_LLM_BACKEND: mock
       ARGUS_AI_SERVICE_URL: http://argus-ai:8090
       ARGUS_AI_SERVICE_TOKEN: ${ARGUS_AI_SERVICE_TOKEN:-argus-ai-local}
+      ARGUS_PROMETHEUS_URL: ${ARGUS_PROMETHEUS_URL:-http://prometheus:9090}
+      ARGUS_LOKI_URL: ${ARGUS_LOKI_URL:-http://loki:3100}
+      ARGUS_RCA_PROBE_TIMEOUT: ${ARGUS_RCA_PROBE_TIMEOUT:-3s}
       ARGUS_OIDC_ISSUER_URL: ${ARGUS_OIDC_ISSUER_URL:-http://localhost:8082/realms/argus}
       ARGUS_OIDC_AUDIENCE: ${ARGUS_OIDC_AUDIENCE:-argus-api}
       ARGUS_OIDC_JWKS_URL: ${ARGUS_OIDC_JWKS_URL:-http://keycloak:8080/realms/argus/protocol/openid-connect/certs}
@@ -234,6 +237,7 @@ services:
     environment:
       PAYMENTS_API_ADDR: :9001
       SERVICE_NAME: payments-api
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
     ports:
       - "9001:9001"
 
