@@ -136,6 +136,12 @@ func TestValidateRulesRejectsBrokenTables(t *testing.T) {
 			return r
 		},
 		"no hypothesis": func(r []Rule) []Rule { r[0].Hypothesis = ""; return r },
+		"symptoms only": func(r []Rule) []Rule {
+			for i := range r[0].Probes {
+				r[0].Probes[i].Symptom = true
+			}
+			return r
+		},
 		"unknown action": func(r []Rule) []Rule {
 			r[0].Remediations = []CandidateTemplate{{ActionType: "rm_rf", Risk: "low"}}
 			return r

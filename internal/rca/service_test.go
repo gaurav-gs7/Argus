@@ -153,13 +153,16 @@ func TestScenarioScores(t *testing.T) {
 		rule       correlation.RuleID
 		hypothesis string
 		full       float64 // every probe corroborated
+		sources    int     // independent sources when every probe corroborates
 		promOnly   float64 // only Prometheus probes corroborated
 	}{
-		{"PaymentsAPIPostgresConnectionExhaustion", correlation.RulePostgresConnectionExhaustion, "PostgreSQL connection pool exhaustion", 0.95, 0.75},
-		{"PaymentsAPIRedisMemoryPressure", correlation.RuleRedisMemoryPressure, "Redis memory pressure causing cache degradation", 0.95, 0.80},
-		{"Nginx5xxSpike", correlation.RuleNginxUpstreamConfig, "Nginx upstream misconfiguration or bad route rollout", 0.80, 0.65},
-		{"PaymentsAPIDependencyLatency", correlation.RuleDependencyLatency, "Downstream dependency latency dominates the request path", 0.80, 0.65},
-		{"PaymentsAPIBadConfigRollout", correlation.RuleBadConfigRollout, "Bad config rollout introduced an invalid runtime configuration", 0.80, 0.55},
+		{"PaymentsAPIPostgresConnectionExhaustion", correlation.RulePostgresConnectionExhaustion, "PostgreSQL connection pool exhaustion", 0.95, 3, 0.75},
+		{"PaymentsAPIRedisMemoryPressure", correlation.RuleRedisMemoryPressure, "Redis memory pressure causing cache degradation", 0.95, 3, 0.80},
+		// Nginx, latency and config have only symptom probes on Prometheus, so
+		// Prometheus alone never lifts them past the single-source cap.
+		{"Nginx5xxSpike", correlation.RuleNginxUpstreamConfig, "Nginx upstream misconfiguration or bad route rollout", 0.80, 2, 0.55},
+		{"PaymentsAPIDependencyLatency", correlation.RuleDependencyLatency, "Downstream dependency latency dominates the request path", 0.80, 2, 0.55},
+		{"PaymentsAPIBadConfigRollout", correlation.RuleBadConfigRollout, "Bad config rollout introduced an invalid runtime configuration", 0.80, 2, 0.55},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.rule), func(t *testing.T) {
@@ -168,7 +171,7 @@ func TestScenarioScores(t *testing.T) {
 			if full.Hypothesis != tc.hypothesis || !near(full.Confidence, tc.full) {
 				t.Fatalf("full corroboration: %q %.4f, want %q %.4f", full.Hypothesis, full.Confidence, tc.hypothesis, tc.full)
 			}
-			if len(full.Score.Sources) != 3 || full.Score.Final != full.Confidence {
+			if len(full.Score.Sources) != tc.sources || full.Score.Final != full.Confidence {
 				t.Fatalf("full corroboration sources=%v score=%+v", full.Score.Sources, full.Score)
 			}
 
@@ -564,6 +567,37 @@ func TestNoHardcodedDemoTargets(t *testing.T) {
 				if strings.Contains(template.TargetFormat, banned) {
 					t.Fatalf("rule %s hardcodes target %q", rule.ID, template.TargetFormat)
 				}
+			}
+		}
+	}
+}
+
+// Recorded from a live run: with the PostgreSQL scenario active, a config
+// rollout alert saw its 5xx-ratio probe corroborate (the outage does return
+// 5xx) and a latency alert saw p95 >= 800ms. Impact symptoms must not count as
+// independent evidence for the wrong failure mode.
+func TestSymptomProbesDoNotCountAsIndependentSources(t *testing.T) {
+	queriers, _ := backends("payments-api", map[string]answer{
+		"config_service_error_ratio": {value: 1},
+		"config_parse_error_logs":    {noData: true},
+		"service_p95_latency":        {value: 0.99},
+		"dependency_latency_logs":    {noData: true},
+	})
+	svc := newTestService(queriers)
+	for _, name := range []string{"PaymentsAPIBadConfigRollout", "PaymentsAPIDependencyLatency"} {
+		got := run(svc, incidentFor("payments-api"), alert(name, "payments-api", nil))
+		if len(got.Score.Sources) != 1 || got.Confidence > SourceCap(1) {
+			t.Fatalf("%s: symptom lifted confidence to %.2f from %v", name, got.Confidence, got.Score.Sources)
+		}
+		if got.Score.Corroborated == 0 {
+			t.Fatalf("%s: symptom weight should still be recorded", name)
+		}
+		if !strings.Contains(strings.Join(got.Factors, "\n"), "(symptom) corroborated") {
+			t.Fatalf("%s: factors do not label the symptom: %v", name, got.Factors)
+		}
+		for _, item := range got.Items {
+			if item.Kind == "probe" && item.Status == "corroborated" && !item.Symptom {
+				t.Fatalf("%s: corroborated item not marked as symptom: %+v", name, item)
 			}
 		}
 	}

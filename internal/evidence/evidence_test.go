@@ -97,6 +97,7 @@ func TestCollectorRunsProbesConcurrentlyInOrder(t *testing.T) {
 	slow := &fakeQuerier{value: 1, ok: true, delay: 100 * time.Millisecond}
 	collector := NewCollector(time.Second, map[Backend]Querier{Prometheus: slow})
 	probes := []Probe{probe("a", Prometheus, AtLeast, 1), probe("b", Prometheus, AtLeast, 2), probe("c", Prometheus, Below, 2)}
+	probes[2].Symptom = true
 	start := time.Now()
 	got := collector.Run(context.Background(), probes, "svc", time.Now())
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
@@ -110,6 +111,9 @@ func TestCollectorRunsProbesConcurrentlyInOrder(t *testing.T) {
 		if got[i].ProbeID != w.id || got[i].Status != w.status {
 			t.Fatalf("result %d = %s/%s, want %s/%s", i, got[i].ProbeID, got[i].Status, w.id, w.status)
 		}
+	}
+	if got[0].Symptom || !got[2].Symptom {
+		t.Fatal("symptom flag not carried onto results")
 	}
 }
 

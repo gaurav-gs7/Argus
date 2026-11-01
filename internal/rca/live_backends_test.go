@@ -107,7 +107,7 @@ func TestLiveBackendsScenario(t *testing.T) {
 		}
 	}
 	if alertScenario != scenario {
-		if report.Confidence > AlertMatchScore || len(report.Score.Sources) != 1 {
+		if report.Confidence > SourceCap(1) || len(report.Score.Sources) != 1 {
 			t.Fatalf("alert for an inactive scenario was corroborated: %+v", report.Score)
 		}
 		if report.Score.Contradicted && (len(candidates) != 1 || candidates[0].ActionType != "collect_diagnostics") {

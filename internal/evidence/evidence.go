@@ -33,6 +33,10 @@ const (
 
 // Probe is one instant query whose result either supports or contradicts a
 // hypothesis. Query is a template; the only substitution is {{service}}.
+//
+// Symptom marks a probe that measures impact (error ratio, latency) rather
+// than the failure mode itself. Symptoms appear in many unrelated outages, so
+// they add weight but cannot make a backend count as an independent source.
 type Probe struct {
 	ID         string     `json:"id"`
 	Backend    Backend    `json:"backend"`
@@ -41,6 +45,7 @@ type Probe struct {
 	Threshold  float64    `json:"threshold"`
 	Weight     float64    `json:"weight"`
 	Claim      string     `json:"claim"`
+	Symptom    bool       `json:"symptom,omitempty"`
 }
 
 type Status string
@@ -65,6 +70,7 @@ type Result struct {
 	Threshold   float64    `json:"threshold"`
 	Weight      float64    `json:"weight"`
 	Claim       string     `json:"claim"`
+	Symptom     bool       `json:"symptom,omitempty"`
 	Status      Status     `json:"status"`
 	Value       *float64   `json:"value,omitempty"`
 	Error       string     `json:"error,omitempty"`
@@ -129,6 +135,7 @@ func (c *Collector) runOne(ctx context.Context, probe Probe, service string, at 
 		Threshold:   probe.Threshold,
 		Weight:      probe.Weight,
 		Claim:       probe.Claim,
+		Symptom:     probe.Symptom,
 		Status:      StatusUnavailable,
 		EvaluatedAt: at.UTC(),
 	}

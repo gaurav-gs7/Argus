@@ -32,7 +32,8 @@ const (
 )
 
 // SourceCap bounds confidence by the number of independent sources that
-// support a hypothesis: the alert itself, Prometheus, and Loki.
+// support a hypothesis: the alert itself, plus Prometheus and Loki when at
+// least one cause-specific (non-symptom) probe on that backend corroborated.
 func SourceCap(sources int) float64 {
 	switch {
 	case sources <= 1:
@@ -232,7 +233,9 @@ func scoreRule(rule correlation.Rule, matches []correlation.Match, run ruleEvide
 		switch result.Status {
 		case evidence.StatusCorroborated:
 			score.corroborated += result.Weight
-			backends[string(result.Backend)] = struct{}{}
+			if !result.Symptom {
+				backends[string(result.Backend)] = struct{}{}
+			}
 		case evidence.StatusRefuted:
 			score.refuted += result.Weight
 		}
@@ -364,6 +367,9 @@ func scoreFactors(score hypothesisScore) []string {
 	factors := []string{fmt.Sprintf("alert match via %s (+%.2f)", score.matches[0].Reason, AlertMatchScore)}
 	for _, result := range score.run.Results {
 		label := fmt.Sprintf("%s probe %s", result.Backend, result.ProbeID)
+		if result.Symptom {
+			label += " (symptom)"
+		}
 		switch result.Status {
 		case evidence.StatusCorroborated:
 			factors = append(factors, fmt.Sprintf("%s corroborated: observed %s %s %s (+%.2f)",
@@ -402,7 +408,7 @@ func evidenceItems(score hypothesisScore) []incidents.RCAEvidence {
 			RuleID: string(score.rule.ID), Kind: "probe", Source: string(result.Backend), Reference: result.ProbeID,
 			Service: score.run.Service, Query: result.Query, Status: string(result.Status), Value: result.Value,
 			Comparator: string(result.Comparator), Threshold: &threshold, Weight: result.Weight,
-			Claim: result.Claim, Error: result.Error, ObservedAt: result.EvaluatedAt,
+			Claim: result.Claim, Symptom: result.Symptom, Error: result.Error, ObservedAt: result.EvaluatedAt,
 		})
 	}
 	return items

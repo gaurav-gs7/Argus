@@ -57,7 +57,7 @@ func errorRatioProbe(id string, weight float64) evidence.Probe {
 	return evidence.Probe{
 		ID: id, Backend: evidence.Prometheus, Query: errorRatioQuery,
 		Comparator: evidence.AtLeast, Threshold: 0.05, Weight: weight,
-		Claim: "5xx response ratio is at or above 5%",
+		Claim: "5xx response ratio is at or above 5%", Symptom: true,
 	}
 }
 
@@ -124,7 +124,7 @@ func DefaultRules() []Rule {
 					ID: "nginx_5xx_ratio", Backend: evidence.Prometheus,
 					Query:      `sum(rate(nginx_http_requests_total{service="{{service}}",status=~"5.."}[5m])) / sum(rate(nginx_http_requests_total{service="{{service}}"}[5m]))`,
 					Comparator: evidence.AtLeast, Threshold: 0.05, Weight: 0.20,
-					Claim: "edge 5xx response ratio is at or above 5%",
+					Claim: "edge 5xx response ratio is at or above 5%", Symptom: true,
 				},
 				logProbe("nginx_upstream_error_logs", `|= "upstream"`, "edge logs report upstream errors", 0.15),
 			},
@@ -141,7 +141,7 @@ func DefaultRules() []Rule {
 				{
 					ID: "service_p95_latency", Backend: evidence.Prometheus, Query: p95LatencyQuery,
 					Comparator: evidence.AtLeast, Threshold: 0.8, Weight: 0.20,
-					Claim: "p95 request latency is at or above 800ms",
+					Claim: "p95 request latency is at or above 800ms", Symptom: true,
 				},
 				logProbe("dependency_latency_logs", `|= "latency dominated"`, "logs attribute request latency to a downstream dependency", 0.15),
 			},
@@ -191,6 +191,7 @@ func ValidateRules(rules []Rule) error {
 		}
 		probeIDs := map[string]struct{}{}
 		total := 0.0
+		hasCause := false
 		for _, probe := range rule.Probes {
 			if err := evidence.ValidateProbe(probe); err != nil {
 				return fmt.Errorf("rule %s: %w", rule.ID, err)
@@ -200,6 +201,10 @@ func ValidateRules(rules []Rule) error {
 			}
 			probeIDs[probe.ID] = struct{}{}
 			total += probe.Weight
+			hasCause = hasCause || !probe.Symptom
+		}
+		if !hasCause {
+			return fmt.Errorf("rule %s has only symptom probes; it can never be independently corroborated", rule.ID)
 		}
 		if total > 0.5+1e-9 {
 			return fmt.Errorf("rule %s: probe weights sum to %.2f, above 0.50", rule.ID, total)

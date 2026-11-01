@@ -106,6 +106,7 @@ type RCAEvidence struct {
 	Threshold  *float64  `json:"threshold,omitempty"`
 	Weight     float64   `json:"weight"`
 	Claim      string    `json:"claim"`
+	Symptom    bool      `json:"symptom,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	ObservedAt time.Time `json:"observed_at"`
 }
