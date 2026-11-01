@@ -119,6 +119,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	approvalContext, approvalCancel := context.WithCancel(context.Background())
 	approvalService.Start(approvalContext)
 	incidentManager := incidents.NewServiceManager(store, auditor, cfg.IncidentGrouping)
+	incidentManager.SetAlertStaleAfter(cfg.AlertStaleAfter)
 	probeClient := &http.Client{Timeout: cfg.RCAProbeTimeout}
 	evidenceCollector := evidence.NewCollector(cfg.RCAProbeTimeout, map[evidence.Backend]evidence.Querier{
 		evidence.Prometheus: evidence.NewPrometheus(cfg.PrometheusURL, cfg.PrometheusBearerToken, probeClient),

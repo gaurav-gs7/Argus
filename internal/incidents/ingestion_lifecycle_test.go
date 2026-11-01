@@ -3,8 +3,10 @@ package incidents_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -174,5 +176,274 @@ func TestConcurrentDuplicateDeliveriesCreateOneIncident(t *testing.T) {
 	wg.Wait()
 	if failed.Load() != 0 || count() != 1 {
 		t.Fatalf("failed=%d incidents=%d, want 0 failures and 1 incident", failed.Load(), count())
+	}
+}
+
+// Alertmanager re-sends a still-firing alert every group_interval/repeat_interval
+// with the same startsAt. An outage longer than the grouping window must stay
+// one incident.
+func TestRenotifiedLongRunningAlertReusesIncident(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+
+	startedAt := time.Now().UTC().Add(-10 * time.Minute)
+	first, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "fp-long"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "fp-long"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].ID != second[0].ID {
+		t.Errorf("one ongoing outage became %d incidents (%s, %s)", count(), first[0].ID, second[0].ID)
+	}
+}
+
+// A "resolved" notification ends an alert. It must not open a new incident.
+func TestResolvedNotificationDoesNotOpenIncident(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+
+	startedAt := time.Now().UTC().Add(-10 * time.Minute)
+	if _, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "fp-res"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := manager.IngestAlertmanager(ctx, alert("resolved", startedAt, "fp-res"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 1 {
+		t.Errorf("resolved notification produced incident %s in status %q; %d incidents exist", resolved[0].ID, resolved[0].Status, n)
+	}
+}
+
+func ageIncident(t *testing.T, database *sql.DB, incidentID string, incidentAge, alertAge time.Duration) {
+	t.Helper()
+	if _, err := database.Exec(`UPDATE incidents SET last_seen_at = now() - $2::interval WHERE id = $1`, incidentID, fmt.Sprintf("%d seconds", int(incidentAge.Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE incident_alerts SET last_seen_at = now() - $2::interval WHERE incident_id = $1`, incidentID, fmt.Sprintf("%d seconds", int(alertAge.Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func timelineTypes(t *testing.T, store *incidents.Store, incidentID string) map[string]int {
+	t.Helper()
+	events, err := store.ListTimeline(context.Background(), incidentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int{}
+	for _, event := range events {
+		out[event.EventType]++
+	}
+	return out
+}
+
+func TestResolvedNotificationClearsAlertsButKeepsIncidentOpen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, _ := ingestionTestManager(t, ctx)
+	store := incidents.NewStore(openIngestionDB(t, ctx))
+
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	created, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "clear-1"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := alert("resolved", startedAt, "clear-1")
+	resolved.Alerts[0].EndsAt = time.Now().UTC()
+	result, err := manager.IngestAlertmanagerWithResult(ctx, resolved, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stats.ResolvedAlerts != 1 || len(result.Incidents) != 0 {
+		t.Fatalf("stats=%+v incidents=%d", result.Stats, len(result.Incidents))
+	}
+	incident, err := store.GetIncident(ctx, created[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incident.AlertsClearedAt == nil || incident.Status != incidents.StatusDetected || incident.ResolvedAt != nil {
+		t.Fatalf("incident after resolution: status=%s cleared=%v resolved=%v", incident.Status, incident.AlertsClearedAt, incident.ResolvedAt)
+	}
+	types := timelineTypes(t, store, incident.ID)
+	if types["alert_resolved"] != 1 || types["alerts_cleared"] != 1 {
+		t.Fatalf("timeline=%v", types)
+	}
+	alerts, _ := store.ListIncidentAlerts(ctx, incident.ID)
+	if len(alerts) != 1 || alerts[0].Status != "resolved" || alerts[0].ResolvedAt == nil {
+		t.Fatalf("alert state=%+v", alerts)
+	}
+}
+
+func TestUnmatchedResolvedNotificationIsIgnored(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+	database := openIngestionDB(t, ctx)
+	payload := alert("resolved", time.Now().UTC(), "never-fired")
+	payload.Alerts[0].Labels["service"] = "svc-never-seen"
+	result, err := manager.IngestAlertmanagerWithResult(ctx, payload, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var services int
+	_ = database.QueryRow(`SELECT count(*) FROM services WHERE name = 'svc-never-seen'`).Scan(&services)
+	if count() != 0 || services != 0 || result.Stats.UnmatchedResolvedAlerts != 1 {
+		t.Fatalf("incidents=%d services=%d stats=%+v", count(), services, result.Stats)
+	}
+}
+
+func TestPartialResolutionKeepsIncidentFiring(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, _ := ingestionTestManager(t, ctx)
+	store := incidents.NewStore(openIngestionDB(t, ctx))
+	startedAt := time.Now().UTC()
+	first, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "pod-a"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "pod-b"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].ID != second[0].ID {
+		t.Fatalf("same alert on two pods split into two incidents")
+	}
+	if _, err := manager.IngestAlertmanager(ctx, alert("resolved", startedAt, "pod-a"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	incident, _ := store.GetIncident(ctx, first[0].ID)
+	if incident.AlertsClearedAt != nil {
+		t.Fatal("incident cleared while pod-b is still firing")
+	}
+	if _, err := manager.IngestAlertmanager(ctx, alert("resolved", startedAt, "pod-b"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	incident, _ = store.GetIncident(ctx, first[0].ID)
+	if incident.AlertsClearedAt == nil {
+		t.Fatal("incident not cleared after its last alert resolved")
+	}
+}
+
+func TestFlappingAlertWithinWindowReusesIncident(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+	store := incidents.NewStore(openIngestionDB(t, ctx))
+	startedAt := time.Now().UTC()
+	first, _ := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "flap"), "test")
+	if _, err := manager.IngestAlertmanager(ctx, alert("resolved", startedAt, "flap"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := manager.IngestAlertmanager(ctx, alert("firing", startedAt.Add(time.Minute), "flap"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].ID != first[0].ID || count() != 1 {
+		t.Fatalf("flap within the window opened a new incident (%d total)", count())
+	}
+	incident, _ := store.GetIncident(ctx, first[0].ID)
+	if incident.AlertsClearedAt != nil || timelineTypes(t, store, incident.ID)["alerts_refired"] != 1 {
+		t.Fatalf("re-fire not recorded: cleared=%v timeline=%v", incident.AlertsClearedAt, timelineTypes(t, store, incident.ID))
+	}
+}
+
+func TestRecurrenceAfterWindowOpensNewIncident(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+	database := openIngestionDB(t, ctx)
+	startedAt := time.Now().UTC()
+	first, _ := manager.IngestAlertmanager(ctx, alert("firing", startedAt, "recur"), "test")
+	if _, err := manager.IngestAlertmanager(ctx, alert("resolved", startedAt, "recur"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	ageIncident(t, database, first[0].ID, 10*time.Minute, 10*time.Minute)
+	later, err := manager.IngestAlertmanager(ctx, alert("firing", time.Now().UTC(), "recur"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if later[0].ID == first[0].ID || count() != 2 {
+		t.Fatalf("a recurrence after the window should open a new incident")
+	}
+}
+
+func TestStaleFiringAlertStopsPinningIncident(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, _ := ingestionTestManager(t, ctx)
+	database := openIngestionDB(t, ctx)
+	store := incidents.NewStore(database)
+	grouping := incidents.Grouping{Window: 5 * time.Minute, AlertStaleAfter: incidents.DefaultAlertStaleAfter}
+	created, _ := manager.IngestAlertmanager(ctx, alert("firing", time.Now().UTC(), "stale"), "test")
+
+	// Last notification an hour ago, alert still firing: a long outage.
+	ageIncident(t, database, created[0].ID, time.Hour, time.Hour)
+	if open, _ := store.ListOpenIncidents(ctx, grouping); len(open) != 1 {
+		t.Fatalf("firing alert should keep a long-running incident open, got %d", len(open))
+	}
+	// Seven hours without a re-send: Alertmanager has lost the alert.
+	ageIncident(t, database, created[0].ID, 7*time.Hour, 7*time.Hour)
+	if open, _ := store.ListOpenIncidents(ctx, grouping); len(open) != 0 {
+		t.Fatalf("stale alert still pins the incident open")
+	}
+}
+
+func TestIncidentRecordsAlertEnvironment(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, _ := ingestionTestManager(t, ctx)
+	payload := alert("firing", time.Now().UTC(), "env")
+	payload.Alerts[0].Labels["environment"] = "production"
+	payload.Alerts[0].Labels["alertname"] = "Latency:p95:High"
+	created, err := manager.IngestAlertmanager(ctx, payload, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created[0].Environment != "production" {
+		t.Fatalf("environment=%q", created[0].Environment)
+	}
+}
+
+// End to end with payloads captured from a real Alertmanager v0.27.0.
+func TestCapturedAlertmanagerPayloadsDriveLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+	store := incidents.NewStore(openIngestionDB(t, ctx))
+	decode := func(name string) incidents.AlertmanagerWebhook {
+		body, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload incidents.AlertmanagerWebhook
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		// Keep the captured alert inside the grouping window.
+		payload.Alerts[0].StartsAt = time.Now().UTC()
+		return payload
+	}
+	created, err := manager.IngestAlertmanager(ctx, decode("alertmanager-0.27-firing.json"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeat, err := manager.IngestAlertmanager(ctx, decode("alertmanager-0.27-firing.json"), "test")
+	if err != nil || repeat[0].ID != created[0].ID {
+		t.Fatalf("repeat notification: %v %+v", err, repeat)
+	}
+	result, err := manager.IngestAlertmanagerWithResult(ctx, decode("alertmanager-0.27-resolved.json"), "test")
+	if err != nil || result.Stats.ResolvedAlerts != 1 {
+		t.Fatalf("resolved: %v %+v", err, result.Stats)
+	}
+	incident, _ := store.GetIncident(ctx, created[0].ID)
+	if count() != 1 || incident.AlertsClearedAt == nil {
+		t.Fatalf("incidents=%d cleared=%v", count(), incident.AlertsClearedAt)
 	}
 }

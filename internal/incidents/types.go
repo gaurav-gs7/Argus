@@ -47,6 +47,42 @@ type Incident struct {
 	Summary     string     `json:"summary,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	Environment string     `json:"environment"`
+	// LastSeenAt is the last time an alert for this incident was received.
+	LastSeenAt time.Time `json:"last_seen_at"`
+	// AlertsClearedAt is set when every alert on the incident has resolved.
+	// The incident itself stays open until an operator resolves it.
+	AlertsClearedAt *time.Time `json:"alerts_cleared_at,omitempty"`
+}
+
+// AlertObservation identifies one alert attached to an incident.
+type AlertObservation struct {
+	DedupeKey string
+	AlertName string
+	Service   string
+	At        time.Time
+}
+
+// IncidentAlert is the current state of one alert attached to an incident.
+type IncidentAlert struct {
+	DedupeKey   string     `json:"dedupe_key"`
+	AlertName   string     `json:"alert_name"`
+	Service     string     `json:"service"`
+	Status      string     `json:"status"`
+	FirstSeenAt time.Time  `json:"first_seen_at"`
+	LastSeenAt  time.Time  `json:"last_seen_at"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
+}
+
+// Grouping decides which open incidents still accept alerts.
+type Grouping struct {
+	// Window: an incident with no firing alerts keeps accepting related
+	// alerts for this long after its last activity.
+	Window time.Duration
+	// AlertStaleAfter: a firing alert not re-sent for this long no longer
+	// keeps its incident open for grouping. Alertmanager re-sends firing
+	// alerts every repeat_interval (4h by default).
+	AlertStaleAfter time.Duration
 }
 
 type Signal struct {
@@ -145,6 +181,11 @@ type IngestionStats struct {
 	InferredRoots        int `json:"inferred_roots"`
 	SuppressedAlertCount int `json:"suppressed_alert_count"`
 	TruncatedAlerts      int `json:"truncated_alerts"`
+	// ResolvedAlerts counts resolved notifications applied to open incidents;
+	// UnmatchedResolvedAlerts counts resolved notifications with no open
+	// incident (they never create one).
+	ResolvedAlerts          int `json:"resolved_alerts"`
+	UnmatchedResolvedAlerts int `json:"unmatched_resolved_alerts"`
 }
 
 type IngestionResult struct {

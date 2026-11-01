@@ -84,7 +84,25 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);`,
+		`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS environment TEXT;`,
+		`UPDATE incidents SET environment = CASE WHEN split_part(dedupe_key, ':', 2) = 'manual' THEN 'local' ELSE COALESCE(NULLIF(split_part(dedupe_key, ':', 3), ''), 'local') END WHERE environment IS NULL;`,
+		`ALTER TABLE incidents ALTER COLUMN environment SET DEFAULT 'local';`,
+		`ALTER TABLE incidents ALTER COLUMN environment SET NOT NULL;`,
+		`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now();`,
+		`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS alerts_cleared_at TIMESTAMPTZ;`,
 		`CREATE INDEX IF NOT EXISTS idx_incidents_dedupe_key ON incidents(dedupe_key);`,
+		`CREATE TABLE IF NOT EXISTS incident_alerts (
+			incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+			dedupe_key TEXT NOT NULL,
+			alert_name TEXT NOT NULL,
+			service TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('firing', 'resolved')),
+			first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			resolved_at TIMESTAMPTZ,
+			PRIMARY KEY (incident_id, dedupe_key)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_incident_alerts_dedupe ON incident_alerts(dedupe_key, status);`,
 		`CREATE TABLE IF NOT EXISTS signals (
 			id TEXT PRIMARY KEY,
 			incident_id TEXT REFERENCES incidents(id),
@@ -224,8 +242,22 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		);`,
 	}
 
+	// The API and worker both migrate at startup. Run the statements on one
+	// connection under a session advisory lock so concurrent starts cannot
+	// race on CREATE TABLE / ALTER TABLE.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext('argus_schema_migrate'))`); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext('argus_schema_migrate'))`)
+	}()
 	for _, stmt := range statements {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate statement failed: %w", err)
 		}
 	}

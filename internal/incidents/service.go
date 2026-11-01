@@ -11,17 +11,29 @@ import (
 	"github.com/gauravgs7/argus/internal/topology"
 )
 
+// DefaultAlertStaleAfter exceeds Alertmanager's default 4h repeat_interval,
+// so a firing alert that is still being re-sent never goes stale.
+const DefaultAlertStaleAfter = 6 * time.Hour
+
 type ServiceManager struct {
-	store          *Store
-	auditor        *audit.Service
-	groupingWindow time.Duration
+	store    *Store
+	auditor  *audit.Service
+	grouping Grouping
 }
 
 func NewServiceManager(store *Store, auditor *audit.Service, groupingWindow time.Duration) *ServiceManager {
 	return &ServiceManager{
-		store:          store,
-		auditor:        auditor,
-		groupingWindow: groupingWindow,
+		store:    store,
+		auditor:  auditor,
+		grouping: Grouping{Window: groupingWindow, AlertStaleAfter: DefaultAlertStaleAfter},
+	}
+}
+
+// SetAlertStaleAfter overrides how long a firing alert that is no longer
+// re-sent keeps its incident open for grouping.
+func (m *ServiceManager) SetAlertStaleAfter(staleAfter time.Duration) {
+	if staleAfter > 0 {
+		m.grouping.AlertStaleAfter = staleAfter
 	}
 }
 
@@ -125,12 +137,20 @@ func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload Alertman
 		return nil
 	}
 
-	alerts, err := m.normalizeAlerts(ctx, tx, payload)
+	alerts, resolved, err := m.normalizeAlerts(ctx, tx, payload)
 	if err != nil {
 		return IngestionResult{}, err
 	}
+	stats := IngestionStats{AlertCount: len(alerts), TruncatedAlerts: payload.TruncatedAlerts}
+	// Resolved notifications never create incidents; they only update the
+	// open incident on which that alert is firing.
+	for _, alert := range resolved {
+		if err := m.resolveAlert(ctx, tx, alert, actor, writeAudit, &stats); err != nil {
+			return IngestionResult{}, err
+		}
+	}
 	if len(alerts) == 0 {
-		return IngestionResult{Incidents: []Incident{}, Stats: IngestionStats{TruncatedAlerts: payload.TruncatedAlerts}}, nil
+		return IngestionResult{Incidents: []Incident{}, Stats: stats}, nil
 	}
 	dependencies, err := tx.ListServiceDependencies(ctx)
 	if err != nil {
@@ -138,12 +158,11 @@ func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload Alertman
 	}
 	graph := topology.New(dependencies)
 	groups := topologyGroupsByEnvironment(graph, alerts)
-	openIncidents, err := tx.ListOpenIncidents(ctx, m.groupingWindow)
+	openIncidents, err := tx.ListOpenIncidents(ctx, m.grouping)
 	if err != nil {
 		return IngestionResult{}, err
 	}
 
-	stats := IngestionStats{AlertCount: len(alerts), TruncatedAlerts: payload.TruncatedAlerts}
 	incidentsOut := make([]Incident, 0, len(groups))
 	for _, group := range groups {
 		groupAlerts := alertsForGroup(alerts, group)
@@ -245,6 +264,7 @@ func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload Alertman
 
 type normalizedAlert struct {
 	alert         AlertmanagerAlert
+	status        string
 	service       string
 	serviceRecord Service
 	alertName     string
@@ -255,47 +275,144 @@ type normalizedAlert struct {
 	dedupeKey     string
 }
 
-func (m *ServiceManager) normalizeAlerts(ctx context.Context, store *Store, payload AlertmanagerWebhook) ([]normalizedAlert, error) {
-	alerts := make([]normalizedAlert, 0, len(payload.Alerts))
+// normalizeAlerts splits a delivery into firing and resolved alerts. Services
+// are only registered for firing alerts, so a stray resolved notification
+// cannot create catalog entries.
+func (m *ServiceManager) normalizeAlerts(ctx context.Context, store *Store, payload AlertmanagerWebhook) ([]normalizedAlert, []normalizedAlert, error) {
+	var firing, resolved []normalizedAlert
 	for _, alert := range payload.Alerts {
 		service := firstNonEmpty(alert.Labels["service"], payload.CommonLabels["service"], "unknown-service")
-		serviceRecord, err := store.EnsureService(ctx, service)
-		if err != nil {
-			return nil, err
-		}
 		alertName := firstNonEmpty(alert.Labels["alertname"], payload.CommonLabels["alertname"], "unknown-alert")
 		environment := firstNonEmpty(alert.Labels["environment"], payload.CommonLabels["environment"], "local")
 		severity := firstNonEmpty(alert.Labels["severity"], payload.CommonLabels["severity"], "sev3")
 		fingerprint := firstNonEmpty(alert.Fingerprint, alertName)
 		summary := firstNonEmpty(alert.Annotations["summary"], payload.CommonAnnotations["summary"], alertName)
+		status := strings.ToLower(firstNonEmpty(alert.Status, payload.Status, "firing"))
 		if alert.StartsAt.IsZero() {
 			alert.StartsAt = time.Now().UTC()
 		}
-		alerts = append(alerts, normalizedAlert{
-			alert:         alert,
-			service:       service,
-			serviceRecord: serviceRecord,
-			alertName:     alertName,
-			environment:   environment,
-			severity:      severity,
-			fingerprint:   fingerprint,
-			summary:       summary,
-			dedupeKey:     BuildDedupeKey(service, alertName, environment, fingerprint),
+		normalized := normalizedAlert{
+			alert:       alert,
+			status:      status,
+			service:     service,
+			alertName:   alertName,
+			environment: environment,
+			severity:    severity,
+			fingerprint: fingerprint,
+			summary:     summary,
+			dedupeKey:   BuildDedupeKey(service, alertName, environment, fingerprint),
+		}
+		if status == "resolved" {
+			resolved = append(resolved, normalized)
+			continue
+		}
+		serviceRecord, err := store.EnsureService(ctx, service)
+		if err != nil {
+			return nil, nil, err
+		}
+		normalized.serviceRecord = serviceRecord
+		firing = append(firing, normalized)
+	}
+	sortAlerts := func(alerts []normalizedAlert) {
+		sort.SliceStable(alerts, func(i, j int) bool {
+			if !alerts[i].alert.StartsAt.Equal(alerts[j].alert.StartsAt) {
+				return alerts[i].alert.StartsAt.Before(alerts[j].alert.StartsAt)
+			}
+			if alerts[i].service != alerts[j].service {
+				return alerts[i].service < alerts[j].service
+			}
+			if alerts[i].alertName != alerts[j].alertName {
+				return alerts[i].alertName < alerts[j].alertName
+			}
+			return alerts[i].fingerprint < alerts[j].fingerprint
 		})
 	}
-	sort.SliceStable(alerts, func(i, j int) bool {
-		if !alerts[i].alert.StartsAt.Equal(alerts[j].alert.StartsAt) {
-			return alerts[i].alert.StartsAt.Before(alerts[j].alert.StartsAt)
-		}
-		if alerts[i].service != alerts[j].service {
-			return alerts[i].service < alerts[j].service
-		}
-		if alerts[i].alertName != alerts[j].alertName {
-			return alerts[i].alertName < alerts[j].alertName
-		}
-		return alerts[i].fingerprint < alerts[j].fingerprint
+	sortAlerts(firing)
+	sortAlerts(resolved)
+	return firing, resolved, nil
+}
+
+// resolveAlert applies a resolved notification to the open incident on which
+// that alert is firing. When the incident's last firing alert resolves, it
+// records that the alerts cleared; the incident stays open for an operator,
+// since remediation or approval may still be in progress.
+func (m *ServiceManager) resolveAlert(ctx context.Context, tx *Store, alert normalizedAlert, actor string, writeAudit func(audit.Entry) error, stats *IngestionStats) error {
+	incident, err := tx.FindIncidentForResolvedAlert(ctx, alert.dedupeKey)
+	if err != nil {
+		return err
+	}
+	if incident == nil {
+		stats.UnmatchedResolvedAlerts++
+		return nil
+	}
+	serviceRecord, err := tx.EnsureService(ctx, alert.service)
+	if err != nil {
+		return err
+	}
+	resolvedAt := alert.alert.EndsAt
+	if resolvedAt.IsZero() {
+		resolvedAt = time.Now().UTC()
+	}
+	if err := tx.AddSignal(ctx, Signal{
+		IncidentID: incident.ID,
+		ServiceID:  serviceRecord.ID,
+		Source:     "alertmanager",
+		SignalType: "alert",
+		Severity:   alert.severity,
+		Name:       alert.alertName,
+		Body: map[string]any{
+			"labels":      alert.alert.Labels,
+			"annotations": alert.alert.Annotations,
+			"generator":   alert.alert.GeneratorURL,
+			"status":      "resolved",
+			"ends_at":     resolvedAt,
+		},
+		ObservedAt: resolvedAt,
+	}); err != nil {
+		return err
+	}
+	remaining, err := tx.MarkAlertResolved(ctx, incident.ID, alert.dedupeKey, resolvedAt, m.grouping.AlertStaleAfter)
+	if err != nil {
+		return err
+	}
+	if err := tx.AddTimelineEvent(ctx, TimelineEvent{
+		IncidentID: incident.ID,
+		EventType:  "alert_resolved",
+		Source:     "alertmanager",
+		Summary:    fmt.Sprintf("Alert %s on %s resolved; %d alert(s) still firing", alert.alertName, alert.service, remaining),
+		Evidence:   map[string]any{"alert_name": alert.alertName, "service": alert.service, "dedupe_key": alert.dedupeKey, "still_firing": remaining},
+		Confidence: 1,
+		OccurredAt: resolvedAt,
+	}); err != nil {
+		return err
+	}
+	stats.ResolvedAlerts++
+	if remaining > 0 {
+		return nil
+	}
+	if err := tx.MarkAlertsCleared(ctx, incident.ID); err != nil {
+		return err
+	}
+	if err := tx.AddTimelineEvent(ctx, TimelineEvent{
+		IncidentID: incident.ID,
+		EventType:  "alerts_cleared",
+		Source:     "alertmanager",
+		Summary:    "Every alert on this incident has resolved. The incident stays open until an operator resolves it.",
+		Evidence:   map[string]any{"last_alert": alert.alertName},
+		Confidence: 1,
+		OccurredAt: resolvedAt,
+	}); err != nil {
+		return err
+	}
+	return writeAudit(audit.Entry{
+		ActorID:      actor,
+		ActorType:    "system",
+		Action:       "incident.alerts_cleared",
+		ResourceType: "incident",
+		ResourceID:   incident.ID,
+		AfterState:   map[string]any{"status": incident.Status, "alerts_cleared": true},
+		Metadata:     map[string]any{"last_alert": alert.alertName, "service": alert.service},
 	})
-	return alerts, nil
 }
 
 func (m *ServiceManager) findOrCreateTopologyIncident(
@@ -307,7 +424,7 @@ func (m *ServiceManager) findOrCreateTopologyIncident(
 	open []Incident,
 ) (*Incident, bool, bool, error) {
 	if root.service == group.Root {
-		exact, err := store.FindOpenByDedupeKey(ctx, root.dedupeKey, m.groupingWindow)
+		exact, err := store.FindOpenByDedupeKey(ctx, root.dedupeKey, m.grouping)
 		if err != nil {
 			return nil, false, false, err
 		}
@@ -331,7 +448,7 @@ func (m *ServiceManager) findOrCreateTopologyIncident(
 	}
 
 	created, err := store.CreateAlertIncident(
-		ctx, rootTitle(group, root), group.Root, root.severity, rootDedupeKey(group, root),
+		ctx, rootTitle(group, root), group.Root, group.Environment, root.severity, rootDedupeKey(group, root),
 		rootFingerprint(group, root), rootSummary(group, root), root.alert.StartsAt,
 	)
 	if err != nil {
@@ -372,6 +489,25 @@ func (m *ServiceManager) attachTopologyAlert(
 		ObservedAt: normalized.alert.StartsAt,
 	}); err != nil {
 		return err
+	}
+	refired, err := store.MarkAlertFiring(ctx, incident.ID, AlertObservation{
+		DedupeKey: normalized.dedupeKey, AlertName: normalized.alertName, Service: normalized.service, At: normalized.alert.StartsAt,
+	})
+	if err != nil {
+		return err
+	}
+	if refired {
+		if err := store.AddTimelineEvent(ctx, TimelineEvent{
+			IncidentID: incident.ID,
+			EventType:  "alerts_refired",
+			Source:     "alertmanager",
+			Summary:    fmt.Sprintf("Alert %s on %s fired again after all alerts had cleared", normalized.alertName, normalized.service),
+			Evidence:   map[string]any{"alert_name": normalized.alertName, "service": normalized.service},
+			Confidence: 1,
+			OccurredAt: normalized.alert.StartsAt,
+		}); err != nil {
+			return err
+		}
 	}
 
 	eventType := "alert_received"
@@ -466,7 +602,7 @@ func relatedOpenIncident(graph *topology.Graph, root, environment string, open [
 	downstreamDistance := int(^uint(0) >> 1)
 	for i := range open {
 		incident := &open[i]
-		if incidentEnvironment(*incident) != environment {
+		if incident.Environment != environment {
 			continue
 		}
 		if incident.Service == root {
@@ -488,14 +624,6 @@ func relatedOpenIncident(graph *topology.Graph, root, environment string, open [
 		return downstream, true
 	}
 	return nil, false
-}
-
-func incidentEnvironment(incident Incident) string {
-	parts := strings.SplitN(incident.DedupeKey, ":", 4)
-	if len(parts) < 3 {
-		return ""
-	}
-	return parts[2]
 }
 
 func rootTitle(group topology.Group, root normalizedAlert) string {

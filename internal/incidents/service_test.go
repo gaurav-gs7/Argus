@@ -88,9 +88,18 @@ func TestTopologyGroupingNeverCrossesEnvironments(t *testing.T) {
 	}
 }
 
-func TestIncidentEnvironmentUsesDedupeKey(t *testing.T) {
-	incident := Incident{DedupeKey: BuildDedupeKey("payments-api", "High5xx", "production", "fp")}
-	if got := incidentEnvironment(incident); got != "production" {
-		t.Fatalf("incident environment=%q, want production", got)
+func TestRelatedOpenIncidentUsesStoredEnvironment(t *testing.T) {
+	// The environment used to be parsed out of the dedupe key, which breaks
+	// when an alert name contains ':'.
+	open := []Incident{{
+		ID: "inc_1", Service: "payments-api", Environment: "production",
+		DedupeKey: BuildDedupeKey("payments-api", "Latency:p95:High", "production", "fp"),
+	}}
+	graph := topology.New(nil)
+	if got, _ := relatedOpenIncident(graph, "payments-api", "production", open); got == nil || got.ID != "inc_1" {
+		t.Fatalf("same-environment incident not matched: %+v", got)
+	}
+	if got, _ := relatedOpenIncident(graph, "payments-api", "p95", open); got != nil {
+		t.Fatalf("matched an incident from another environment: %+v", got)
 	}
 }

@@ -192,16 +192,19 @@ func (s *Store) CreateManualIncident(ctx context.Context, req ManualIncidentRequ
 		Summary:     req.Summary,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		Environment: "local",
+		LastSeenAt:  now,
 	}
 
 	_, err = s.q.ExecContext(ctx, `
 		INSERT INTO incidents (
 			id, title, service_id, severity, status, dedupe_key, fingerprint,
-			started_at, detected_at, summary, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			started_at, detected_at, summary, created_at, updated_at, environment, last_seen_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 	`,
 		incident.ID, incident.Title, incident.ServiceID, incident.Severity, incident.Status, incident.DedupeKey,
 		incident.Fingerprint, incident.StartedAt, incident.DetectedAt, incident.Summary, incident.CreatedAt, incident.UpdatedAt,
+		incident.Environment, incident.LastSeenAt,
 	)
 	if err != nil {
 		return Incident{}, fmt.Errorf("insert incident: %w", err)
@@ -210,59 +213,184 @@ func (s *Store) CreateManualIncident(ctx context.Context, req ManualIncidentRequ
 	return incident, nil
 }
 
-func (s *Store) FindOpenByDedupeKey(ctx context.Context, dedupeKey string, window time.Duration) (*Incident, error) {
-	row := s.q.QueryRowContext(ctx, `
-		SELECT i.id, i.title, i.service_id, s.name, i.severity, i.status, i.dedupe_key, i.fingerprint,
-		       i.started_at, i.detected_at, i.resolved_at, i.summary, i.created_at, i.updated_at
+// incidentSelect is the shared projection for scanIncident.
+const incidentSelect = `
+		SELECT i.id, i.title, COALESCE(i.service_id, ''), COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
+		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
+		       i.created_at, i.updated_at, i.environment, i.last_seen_at, i.alerts_cleared_at
 		FROM incidents i
-		LEFT JOIN services s ON s.id = i.service_id
-		WHERE i.dedupe_key = $1
-		  AND i.status NOT IN ('resolved', 'cancelled')
-		  AND i.started_at >= now() - $2::interval
-		ORDER BY i.started_at DESC
-		LIMIT 1
-	`, dedupeKey, intervalLiteral(window))
+		LEFT JOIN services s ON s.id = i.service_id`
 
+// activeForGrouping is true for an open incident that still has a non-stale
+// firing alert, or that saw activity within the grouping window. $1 is the
+// window and $2 the alert staleness bound, both as interval literals.
+const activeForGrouping = `
+		i.status NOT IN ('resolved', 'cancelled')
+		AND (
+			EXISTS (
+				SELECT 1 FROM incident_alerts a
+				WHERE a.incident_id = i.id AND a.status = 'firing'
+				  AND a.last_seen_at >= now() - $2::interval
+			)
+			OR i.last_seen_at >= now() - $1::interval
+		)`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanIncident(row rowScanner) (Incident, error) {
 	var incident Incident
 	err := row.Scan(
 		&incident.ID, &incident.Title, &incident.ServiceID, &incident.Service, &incident.Severity, &incident.Status,
 		&incident.DedupeKey, &incident.Fingerprint, &incident.StartedAt, &incident.DetectedAt, &incident.ResolvedAt,
-		&incident.Summary, &incident.CreatedAt, &incident.UpdatedAt,
+		&incident.Summary, &incident.CreatedAt, &incident.UpdatedAt, &incident.Environment, &incident.LastSeenAt,
+		&incident.AlertsClearedAt,
 	)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	return incident, err
+}
+
+func (s *Store) queryIncidents(ctx context.Context, query string, args ...any) ([]Incident, error) {
+	rows, err := s.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
+	var items []Incident
+	for rows.Next() {
+		item, err := scanIncident(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan incident: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// FindOpenByDedupeKey returns the most recently active open incident that
+// carries this alert, either as its root key or as an attached alert.
+func (s *Store) FindOpenByDedupeKey(ctx context.Context, dedupeKey string, grouping Grouping) (*Incident, error) {
+	items, err := s.queryIncidents(ctx, incidentSelect+`
+		WHERE `+activeForGrouping+`
+		  AND (i.dedupe_key = $3 OR EXISTS (
+				SELECT 1 FROM incident_alerts a WHERE a.incident_id = i.id AND a.dedupe_key = $3))
+		ORDER BY i.last_seen_at DESC, i.id
+		LIMIT 1
+	`, intervalLiteral(grouping.Window), intervalLiteral(grouping.AlertStaleAfter), dedupeKey)
 	if err != nil {
 		return nil, fmt.Errorf("find incident by dedupe key: %w", err)
 	}
-	return &incident, nil
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
 }
 
-func (s *Store) ListOpenIncidents(ctx context.Context, window time.Duration) ([]Incident, error) {
-	rows, err := s.q.QueryContext(ctx, `
-		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
-		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
-		       i.created_at, i.updated_at
-		FROM incidents i
-		LEFT JOIN services s ON s.id = i.service_id
-		WHERE i.status NOT IN ('resolved', 'cancelled')
-		  AND i.started_at >= now() - $1::interval
+// ListOpenIncidents returns incidents that may still absorb related alerts.
+func (s *Store) ListOpenIncidents(ctx context.Context, grouping Grouping) ([]Incident, error) {
+	items, err := s.queryIncidents(ctx, incidentSelect+`
+		WHERE `+activeForGrouping+`
 		ORDER BY i.started_at ASC, i.id ASC
-	`, intervalLiteral(window))
+	`, intervalLiteral(grouping.Window), intervalLiteral(grouping.AlertStaleAfter))
 	if err != nil {
 		return nil, fmt.Errorf("list open incidents: %w", err)
 	}
-	defer rows.Close()
+	return items, nil
+}
 
-	var items []Incident
+// MarkAlertFiring records a firing notification for an alert on an incident
+// and bumps the incident's activity. It reports whether the incident's alerts
+// had previously all cleared (a re-fire).
+func (s *Store) MarkAlertFiring(ctx context.Context, incidentID string, alert AlertObservation) (bool, error) {
+	if _, err := s.q.ExecContext(ctx, `
+		INSERT INTO incident_alerts (incident_id, dedupe_key, alert_name, service, status, first_seen_at, last_seen_at)
+		VALUES ($1, $2, $3, $4, 'firing', $5, now())
+		ON CONFLICT (incident_id, dedupe_key) DO UPDATE
+		SET status = 'firing', last_seen_at = now(), resolved_at = NULL
+	`, incidentID, alert.DedupeKey, alert.AlertName, alert.Service, alert.At); err != nil {
+		return false, fmt.Errorf("record firing alert: %w", err)
+	}
+	var refired bool
+	err := s.q.QueryRowContext(ctx, `
+		WITH previous AS (SELECT alerts_cleared_at FROM incidents WHERE id = $1 FOR UPDATE)
+		UPDATE incidents
+		SET last_seen_at = now(), alerts_cleared_at = NULL
+		FROM previous
+		WHERE incidents.id = $1
+		RETURNING previous.alerts_cleared_at IS NOT NULL
+	`, incidentID).Scan(&refired)
+	if err != nil {
+		return false, fmt.Errorf("touch incident: %w", err)
+	}
+	return refired, nil
+}
+
+// FindIncidentForResolvedAlert returns the open incident on which this alert
+// is currently firing, regardless of age.
+func (s *Store) FindIncidentForResolvedAlert(ctx context.Context, dedupeKey string) (*Incident, error) {
+	items, err := s.queryIncidents(ctx, incidentSelect+`
+		WHERE i.status NOT IN ('resolved', 'cancelled')
+		  AND EXISTS (SELECT 1 FROM incident_alerts a
+		              WHERE a.incident_id = i.id AND a.dedupe_key = $1 AND a.status = 'firing')
+		ORDER BY i.last_seen_at DESC, i.id
+		LIMIT 1
+	`, dedupeKey)
+	if err != nil {
+		return nil, fmt.Errorf("find incident for resolved alert: %w", err)
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
+}
+
+// MarkAlertResolved records a resolved notification and returns how many
+// non-stale alerts are still firing on the incident.
+func (s *Store) MarkAlertResolved(ctx context.Context, incidentID, dedupeKey string, resolvedAt time.Time, staleAfter time.Duration) (int, error) {
+	if _, err := s.q.ExecContext(ctx, `
+		UPDATE incident_alerts SET status = 'resolved', resolved_at = $3, last_seen_at = now()
+		WHERE incident_id = $1 AND dedupe_key = $2
+	`, incidentID, dedupeKey, resolvedAt); err != nil {
+		return 0, fmt.Errorf("record resolved alert: %w", err)
+	}
+	if _, err := s.q.ExecContext(ctx, `UPDATE incidents SET last_seen_at = now() WHERE id = $1`, incidentID); err != nil {
+		return 0, fmt.Errorf("touch incident: %w", err)
+	}
+	var remaining int
+	if err := s.q.QueryRowContext(ctx, `
+		SELECT count(*) FROM incident_alerts
+		WHERE incident_id = $1 AND status = 'firing' AND last_seen_at >= now() - $2::interval
+	`, incidentID, intervalLiteral(staleAfter)).Scan(&remaining); err != nil {
+		return 0, fmt.Errorf("count firing alerts: %w", err)
+	}
+	return remaining, nil
+}
+
+// MarkAlertsCleared stamps the moment every alert on an incident resolved.
+func (s *Store) MarkAlertsCleared(ctx context.Context, incidentID string) error {
+	if _, err := s.q.ExecContext(ctx, `
+		UPDATE incidents SET alerts_cleared_at = now() WHERE id = $1 AND alerts_cleared_at IS NULL
+	`, incidentID); err != nil {
+		return fmt.Errorf("mark alerts cleared: %w", err)
+	}
+	return nil
+}
+
+// ListIncidentAlerts returns the alert state attached to an incident.
+func (s *Store) ListIncidentAlerts(ctx context.Context, incidentID string) ([]IncidentAlert, error) {
+	rows, err := s.q.QueryContext(ctx, `
+		SELECT dedupe_key, alert_name, service, status, first_seen_at, last_seen_at, resolved_at
+		FROM incident_alerts WHERE incident_id = $1 ORDER BY first_seen_at, dedupe_key
+	`, incidentID)
+	if err != nil {
+		return nil, fmt.Errorf("list incident alerts: %w", err)
+	}
+	defer rows.Close()
+	var items []IncidentAlert
 	for rows.Next() {
-		var item Incident
-		if err := rows.Scan(
-			&item.ID, &item.Title, &item.ServiceID, &item.Service, &item.Severity, &item.Status,
-			&item.DedupeKey, &item.Fingerprint, &item.StartedAt, &item.DetectedAt, &item.ResolvedAt,
-			&item.Summary, &item.CreatedAt, &item.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan open incident: %w", err)
+		var item IncidentAlert
+		if err := rows.Scan(&item.DedupeKey, &item.AlertName, &item.Service, &item.Status, &item.FirstSeenAt, &item.LastSeenAt, &item.ResolvedAt); err != nil {
+			return nil, fmt.Errorf("scan incident alert: %w", err)
 		}
 		items = append(items, item)
 	}
@@ -295,7 +423,7 @@ func (s *Store) PromoteIncidentRoot(
 	return s.GetIncident(ctx, incidentID)
 }
 
-func (s *Store) CreateAlertIncident(ctx context.Context, title, serviceName, severity, dedupeKey, fingerprint, summary string, startedAt time.Time) (Incident, error) {
+func (s *Store) CreateAlertIncident(ctx context.Context, title, serviceName, environment, severity, dedupeKey, fingerprint, summary string, startedAt time.Time) (Incident, error) {
 	service, err := s.EnsureService(ctx, serviceName)
 	if err != nil {
 		return Incident{}, err
@@ -316,16 +444,19 @@ func (s *Store) CreateAlertIncident(ctx context.Context, title, serviceName, sev
 		Summary:     summary,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		Environment: environment,
+		LastSeenAt:  now,
 	}
 
 	_, err = s.q.ExecContext(ctx, `
 		INSERT INTO incidents (
 			id, title, service_id, severity, status, dedupe_key, fingerprint,
-			started_at, detected_at, summary, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			started_at, detected_at, summary, created_at, updated_at, environment, last_seen_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 	`,
 		incident.ID, incident.Title, incident.ServiceID, incident.Severity, incident.Status, incident.DedupeKey,
 		incident.Fingerprint, incident.StartedAt, incident.DetectedAt, incident.Summary, incident.CreatedAt, incident.UpdatedAt,
+		incident.Environment, incident.LastSeenAt,
 	)
 	if err != nil {
 		return Incident{}, fmt.Errorf("insert alert incident: %w", err)
@@ -372,50 +503,16 @@ func (s *Store) AddTimelineEvent(ctx context.Context, event TimelineEvent) error
 }
 
 func (s *Store) ListIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.q.QueryContext(ctx, `
-		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
-		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
-		       i.created_at, i.updated_at
-		FROM incidents i
-		LEFT JOIN services s ON s.id = i.service_id
-		ORDER BY i.started_at DESC
-	`)
+	items, err := s.queryIncidents(ctx, incidentSelect+` ORDER BY i.started_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list incidents: %w", err)
 	}
-	defer rows.Close()
-
-	var incidents []Incident
-	for rows.Next() {
-		var incident Incident
-		if err := rows.Scan(
-			&incident.ID, &incident.Title, &incident.ServiceID, &incident.Service, &incident.Severity, &incident.Status, &incident.DedupeKey,
-			&incident.Fingerprint, &incident.StartedAt, &incident.DetectedAt, &incident.ResolvedAt, &incident.Summary,
-			&incident.CreatedAt, &incident.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan incident: %w", err)
-		}
-		incidents = append(incidents, incident)
-	}
-	return incidents, rows.Err()
+	return items, nil
 }
 
 func (s *Store) GetIncident(ctx context.Context, incidentID string) (Incident, error) {
-	row := s.q.QueryRowContext(ctx, `
-		SELECT i.id, i.title, i.service_id, COALESCE(s.name, ''), i.severity, i.status, i.dedupe_key,
-		       i.fingerprint, i.started_at, i.detected_at, i.resolved_at, COALESCE(i.summary, ''),
-		       i.created_at, i.updated_at
-		FROM incidents i
-		LEFT JOIN services s ON s.id = i.service_id
-		WHERE i.id = $1
-	`, incidentID)
-
-	var incident Incident
-	if err := row.Scan(
-		&incident.ID, &incident.Title, &incident.ServiceID, &incident.Service, &incident.Severity, &incident.Status, &incident.DedupeKey,
-		&incident.Fingerprint, &incident.StartedAt, &incident.DetectedAt, &incident.ResolvedAt, &incident.Summary,
-		&incident.CreatedAt, &incident.UpdatedAt,
-	); err != nil {
+	incident, err := scanIncident(s.q.QueryRowContext(ctx, incidentSelect+` WHERE i.id = $1`, incidentID))
+	if err != nil {
 		return Incident{}, fmt.Errorf("get incident: %w", err)
 	}
 	return incident, nil
