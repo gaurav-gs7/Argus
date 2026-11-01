@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -197,8 +198,16 @@ func (s *Service) Cancel(ctx context.Context, remediationID, actor string) error
 	if err := RequireTransition(rem.Status, StateCancelled); err != nil {
 		return err
 	}
-	if err := s.store.UpdateRemediationApproval(ctx, remediationID, StateCancelled, ""); err != nil {
+	cancelled, err := s.store.CancelRemediation(ctx, remediationID, rem.Status)
+	if err != nil {
 		return err
+	}
+	if !cancelled {
+		latest, getErr := s.store.GetRemediation(ctx, remediationID)
+		if getErr != nil {
+			return getErr
+		}
+		return fmt.Errorf("%w: remediation moved from %s to %s before it could be cancelled", ErrStateChanged, rem.Status, latest.Status)
 	}
 	return s.auditor.Write(ctx, audit.Entry{
 		ActorID: actor, ActorType: "user", Action: "remediation.cancelled", ResourceType: "remediation", ResourceID: remediationID,
@@ -273,19 +282,33 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	})
 }
 
+// ErrStateChanged reports that a remediation moved to another state while a
+// conditional transition was in flight.
+var ErrStateChanged = errors.New("remediation state changed")
+
+func requireApplied(applied bool, err error) error {
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrStateChanged
+	}
+	return nil
+}
+
 func (s *Service) applyQueuedOutcome(ctx context.Context, remediation incidents.RemediationAction, outcome ExecutionOutcome) error {
 	switch outcome.Status {
 	case StateQueued:
 		return nil
 	case StateRunning:
-		return s.store.MarkRemediationRunning(ctx, remediation.ID)
+		return requireApplied(s.store.ClaimRemediation(ctx, remediation.ID))
 	case StateSucceeded:
-		if err := s.store.MarkRemediationRunning(ctx, remediation.ID); err != nil {
+		if err := requireApplied(s.store.ClaimRemediation(ctx, remediation.ID)); err != nil {
 			return err
 		}
-		return s.store.CompleteRemediation(ctx, remediation.ID, StateSucceeded, outcome.Result, "")
+		return requireApplied(s.store.CompleteRemediation(ctx, remediation.ID, StateSucceeded, outcome.Result, ""))
 	case StateFailed:
-		return s.store.CompleteRemediation(ctx, remediation.ID, StateFailed, outcome.Result, "executor reported failure")
+		return requireApplied(s.store.CompleteRemediation(ctx, remediation.ID, StateFailed, outcome.Result, "executor reported failure"))
 	default:
 		return fmt.Errorf("unknown execution outcome status %q", outcome.Status)
 	}

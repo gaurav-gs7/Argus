@@ -850,16 +850,19 @@ func (s *Store) CountFailedRemediations(ctx context.Context, incidentID, actionT
 	return count, nil
 }
 
-func (s *Store) UpdateRemediationApproval(ctx context.Context, remediationID, status, approvedBy string) error {
-	_, err := s.q.ExecContext(ctx, `
-		UPDATE remediation_actions
-		SET status = $2, approved_by = NULLIF($3, '')
-		WHERE id = $1
-	`, remediationID, status, approvedBy)
+// CancelRemediation moves a remediation to cancelled only if it is still in
+// the state the caller observed. It returns false when the state changed in
+// between (for example a worker claimed it), so a cancel can never land on an
+// action that is already executing.
+func (s *Store) CancelRemediation(ctx context.Context, remediationID, expectedStatus string) (bool, error) {
+	result, err := s.q.ExecContext(ctx, `
+		UPDATE remediation_actions SET status = 'cancelled', completed_at = now()
+		WHERE id = $1 AND status = $2
+	`, remediationID, expectedStatus)
 	if err != nil {
-		return fmt.Errorf("update remediation approval: %w", err)
+		return false, fmt.Errorf("cancel remediation: %w", err)
 	}
-	return nil
+	return affectedOne(result)
 }
 
 func (s *Store) MarkRemediationQueued(ctx context.Context, remediationID string, dryRun bool) error {
@@ -893,29 +896,44 @@ func (s *Store) ReleaseRemediationQueueReservation(ctx context.Context, remediat
 	return nil
 }
 
-func (s *Store) MarkRemediationRunning(ctx context.Context, remediationID string) error {
-	_, err := s.q.ExecContext(ctx, `
+// ClaimRemediation marks a remediation running for execution. Only queued
+// actions, or running ones being redelivered after a worker crash, can be
+// claimed; cancelled, failed, timed-out and succeeded actions cannot. It
+// returns false when the action is not claimable.
+func (s *Store) ClaimRemediation(ctx context.Context, remediationID string) (bool, error) {
+	result, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
-		SET status = 'running', started_at = now()
-		WHERE id = $1
+		SET status = 'running', started_at = COALESCE(started_at, now())
+		WHERE id = $1 AND status IN ('queued', 'running')
 	`, remediationID)
 	if err != nil {
-		return fmt.Errorf("mark remediation running: %w", err)
+		return false, fmt.Errorf("claim remediation: %w", err)
 	}
-	return nil
+	return affectedOne(result)
 }
 
-func (s *Store) CompleteRemediation(ctx context.Context, remediationID, status string, result map[string]any, execErr string) error {
+// CompleteRemediation records a terminal outcome for a queued or running
+// remediation. It returns false, and changes nothing, if the action already
+// reached another state.
+func (s *Store) CompleteRemediation(ctx context.Context, remediationID, status string, result map[string]any, execErr string) (bool, error) {
 	resultJSON, _ := json.Marshal(result)
-	_, err := s.q.ExecContext(ctx, `
+	res, err := s.q.ExecContext(ctx, `
 		UPDATE remediation_actions
 		SET status = $2, completed_at = now(), result = $3, error = NULLIF($4, '')
-		WHERE id = $1
+		WHERE id = $1 AND status IN ('queued', 'running')
 	`, remediationID, status, resultJSON, execErr)
 	if err != nil {
-		return fmt.Errorf("complete remediation: %w", err)
+		return false, fmt.Errorf("complete remediation: %w", err)
 	}
-	return nil
+	return affectedOne(res)
+}
+
+func affectedOne(result sql.Result) (bool, error) {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read affected rows: %w", err)
+	}
+	return rows == 1, nil
 }
 
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {

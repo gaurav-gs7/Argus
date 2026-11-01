@@ -77,19 +77,22 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		return err
 	}
 
-	if remediation.Status == remediationpkg.StateSucceeded {
+	if remediation.Status != remediationpkg.StateQueued && remediation.Status != remediationpkg.StateRunning {
+		// Cancelled, failed, timed out, succeeded, or never queued: the
+		// message is stale and must not execute anything.
+		r.auditSkip(ctx, remediation.ID, remediation.Status)
 		return msg.Ack()
 	}
 
 	handler, ok := r.handlers[remediation.ActionType]
 	if !ok {
-		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, "no handler registered")
+		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, "no handler registered")
 		_ = msg.Ack()
 		return fmt.Errorf("no handler for %s", remediation.ActionType)
 	}
 	if err := handler.Validate(remediation); err != nil {
 		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
-		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, err.Error())
+		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, err.Error())
 		_ = r.auditor.Write(ctx, audit.Entry{
 			ActorType: "system", Action: "remediation.validation_failed", ResourceType: "remediation", ResourceID: remediation.ID,
 			AfterState: map[string]any{"status": remediationpkg.StateFailed, "error": err.Error()},
@@ -99,9 +102,21 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 	}
 
 	start := time.Now()
-	if err := r.store.MarkRemediationRunning(ctx, remediation.ID); err != nil {
+	claimed, err := r.store.ClaimRemediation(ctx, remediation.ID)
+	if err != nil {
 		_ = msg.Nak()
 		return err
+	}
+	if !claimed {
+		// It left queued between the read above and this claim (for example
+		// an operator cancelled it). Do not execute.
+		latest, getErr := r.store.GetRemediation(ctx, remediation.ID)
+		status := "unknown"
+		if getErr == nil {
+			status = latest.Status
+		}
+		r.auditSkip(ctx, remediation.ID, status)
+		return msg.Ack()
 	}
 
 	var result map[string]any
@@ -134,7 +149,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		}
 
 		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
-		_ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, result, err.Error())
+		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, result, err.Error())
 		_ = r.auditor.Write(ctx, audit.Entry{
 			ActorType:    "system",
 			Action:       "remediation.failed",
@@ -150,9 +165,18 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		return err
 	}
 
-	if err := r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateSucceeded, result, ""); err != nil {
+	completed, err := r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateSucceeded, result, "")
+	if err != nil {
 		_ = msg.Nak()
 		return err
+	}
+	if !completed {
+		_ = r.auditor.Write(ctx, audit.Entry{
+			ActorType: "system", Action: "remediation.completion_conflict", ResourceType: "remediation", ResourceID: remediation.ID,
+			AfterState: map[string]any{"result": result},
+			Metadata:   map[string]any{"reason": "remediation left running before the result was recorded"},
+		})
+		return msg.Ack()
 	}
 	r.metrics.RemediationDuration.WithLabelValues(remediation.ActionType).Observe(time.Since(start).Seconds())
 
@@ -167,6 +191,17 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		},
 	})
 	return msg.Ack()
+}
+
+func (r *Runner) auditSkip(ctx context.Context, remediationID, status string) {
+	if status == remediationpkg.StateSucceeded {
+		return // replay of a completed action; nothing worth recording
+	}
+	_ = r.auditor.Write(ctx, audit.Entry{
+		ActorType: "system", Action: "remediation.execution_skipped", ResourceType: "remediation", ResourceID: remediationID,
+		AfterState: map[string]any{"status": status},
+		Metadata:   map[string]any{"reason": "remediation is not queued or running"},
+	})
 }
 
 func (r *Runner) heartbeat(ctx context.Context, workerID string) {
