@@ -146,3 +146,47 @@ func TestGeneratePersistsQueriedEvidence(t *testing.T) {
 		t.Fatalf("expected 3 probe timeline events, got %d", probeEvents)
 	}
 }
+
+// Regenerating RCA used to move a resolved incident back to rca_generated.
+func TestGenerateDoesNotReopenResolvedIncident(t *testing.T) {
+	dsn := os.Getenv("ARGUS_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	store := incidents.NewStore(database)
+	env := fmt.Sprintf("reopen-%d", time.Now().UnixNano())
+	created, err := incidents.NewServiceManager(store, audit.NewService(database), 30*time.Minute).IngestAlertmanager(ctx,
+		incidents.AlertmanagerWebhook{Alerts: []incidents.AlertmanagerAlert{{
+			Status: "firing", StartsAt: time.Now().UTC(), Fingerprint: env,
+			Labels: map[string]string{"alertname": "PaymentsAPIPostgresPoolSaturation", "service": "payments-api", "environment": env},
+		}}}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, "", "", testMetrics(), nil)
+	if _, _, err := svc.Generate(ctx, created[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if incident, _ := store.GetIncident(ctx, created[0].ID); incident.Status != incidents.StatusRCAGenerated {
+		t.Fatalf("first RCA should advance detected -> rca_generated, got %s", incident.Status)
+	}
+	if _, applied, err := store.TransitionIncident(ctx, created[0].ID, incidents.StatusResolved); err != nil || !applied {
+		t.Fatalf("resolve: %v %v", applied, err)
+	}
+	if _, _, err := svc.Generate(ctx, created[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if incident, _ := store.GetIncident(ctx, created[0].ID); incident.Status != incidents.StatusResolved || incident.ResolvedAt == nil {
+		t.Fatalf("regenerating RCA reopened the incident: %s", incident.Status)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -445,5 +446,60 @@ func TestCapturedAlertmanagerPayloadsDriveLifecycle(t *testing.T) {
 	incident, _ := store.GetIncident(ctx, created[0].ID)
 	if count() != 1 || incident.AlertsClearedAt == nil {
 		t.Fatalf("incidents=%d cleared=%v", count(), incident.AlertsClearedAt)
+	}
+}
+
+func TestTransitionIncidentEnforcesLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, _ := ingestionTestManager(t, ctx)
+	store := incidents.NewStore(openIngestionDB(t, ctx))
+	created, err := manager.IngestAlertmanager(ctx, alert("firing", time.Now().UTC(), "lifecycle"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created[0].ID
+	steps := []struct {
+		to       string
+		previous string
+		applied  bool
+	}{
+		{incidents.StatusRCAGenerated, incidents.StatusDetected, true},
+		{incidents.StatusTriaged, incidents.StatusRCAGenerated, false},
+		{incidents.StatusAwaitingApproval, incidents.StatusRCAGenerated, true},
+		{incidents.StatusTriaged, incidents.StatusAwaitingApproval, false},
+		{incidents.StatusCancelled, incidents.StatusAwaitingApproval, true},
+		{incidents.StatusRCAGenerated, incidents.StatusCancelled, false},
+	}
+	for _, step := range steps {
+		previous, applied, err := store.TransitionIncident(ctx, id, step.to)
+		if err != nil || previous != step.previous || applied != step.applied {
+			t.Fatalf("-> %s: previous=%s applied=%v err=%v; want %s %v", step.to, previous, applied, err, step.previous, step.applied)
+		}
+	}
+	incident, _ := store.GetIncident(ctx, id)
+	if incident.Status != incidents.StatusCancelled {
+		t.Fatalf("final status=%s", incident.Status)
+	}
+	if _, _, err := store.TransitionIncident(ctx, "inc_missing", incidents.StatusResolved); !errors.Is(err, incidents.ErrIncidentNotFound) {
+		t.Fatalf("missing incident err=%v", err)
+	}
+}
+
+func TestResolveSetsResolvedAtOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, _ := ingestionTestManager(t, ctx)
+	store := incidents.NewStore(openIngestionDB(t, ctx))
+	created, _ := manager.IngestAlertmanager(ctx, alert("firing", time.Now().UTC(), "resolve-once"), "test")
+	if _, applied, err := store.TransitionIncident(ctx, created[0].ID, incidents.StatusResolved); err != nil || !applied {
+		t.Fatalf("resolve: %v %v", applied, err)
+	}
+	first, _ := store.GetIncident(ctx, created[0].ID)
+	if first.ResolvedAt == nil {
+		t.Fatal("resolved_at not set")
+	}
+	if _, applied, _ := store.TransitionIncident(ctx, created[0].ID, incidents.StatusResolved); applied {
+		t.Fatal("resolving a resolved incident applied again")
 	}
 }

@@ -146,7 +146,9 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		return incidents.RCAReport{}, nil, err
 	}
 
-	_ = s.store.UpdateIncidentStatus(ctx, incidentID, incidents.StatusRCAGenerated)
+	// Advance only: regenerating RCA on an incident that has moved on (or is
+	// resolved) records the report without rewinding the incident.
+	_, _, _ = s.store.TransitionIncident(ctx, incidentID, incidents.StatusRCAGenerated)
 	s.metrics.RCAJobsTotal.WithLabelValues("succeeded").Inc()
 	s.metrics.RCADuration.WithLabelValues(report.ModelBackend).Observe(time.Since(start).Seconds())
 	s.metrics.RCAConfidence.WithLabelValues(result.Hypothesis).Observe(result.Confidence)

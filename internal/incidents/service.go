@@ -41,46 +41,61 @@ func BuildDedupeKey(service, alertName, environment, fingerprint string) string 
 	return fmt.Sprintf("%s:%s:%s:%s", service, alertName, environment, fingerprint)
 }
 
+// transitions is the incident lifecycle. Automatic steps (RCA, proposals)
+// only ever move an incident forward along it; operators get a conflict when
+// they request a transition it does not allow. An operator may resolve any
+// open incident; resolved and cancelled are terminal, and remediation cannot
+// be dispatched for an incident in either state.
+var transitions = map[string]map[string]bool{
+	StatusDetected: {
+		StatusTriaged: true, StatusInvestigating: true, StatusRCAGenerated: true,
+		StatusResolved: true, StatusCancelled: true,
+	},
+	StatusTriaged: {
+		StatusInvestigating: true, StatusRCAGenerated: true, StatusResolved: true, StatusCancelled: true,
+	},
+	StatusInvestigating: {
+		StatusRCAGenerated: true, StatusResolved: true, StatusFailed: true,
+	},
+	StatusRCAGenerated: {
+		StatusRemediationProposed: true, StatusAwaitingApproval: true, StatusResolved: true,
+	},
+	StatusRemediationProposed: {
+		StatusAwaitingApproval: true, StatusRemediating: true, StatusResolved: true,
+	},
+	StatusAwaitingApproval: {
+		StatusRemediating: true, StatusResolved: true, StatusCancelled: true,
+	},
+	StatusRemediating: {
+		StatusMitigated: true, StatusResolved: true, StatusFailed: true,
+	},
+	StatusMitigated: {
+		StatusResolved: true,
+	},
+	StatusFailed: {
+		StatusInvestigating: true, StatusResolved: true,
+	},
+}
+
 func CanTransition(from, to string) bool {
-	allowed := map[string]map[string]bool{
-		StatusDetected: {
-			StatusTriaged:       true,
-			StatusInvestigating: true,
-			StatusResolved:      true,
-			StatusCancelled:     true,
-		},
-		StatusTriaged: {
-			StatusInvestigating: true,
-			StatusResolved:      true,
-			StatusCancelled:     true,
-		},
-		StatusInvestigating: {
-			StatusRCAGenerated: true,
-			StatusResolved:     true,
-			StatusFailed:       true,
-		},
-		StatusRCAGenerated: {
-			StatusRemediationProposed: true,
-			StatusResolved:            true,
-		},
-		StatusRemediationProposed: {
-			StatusAwaitingApproval: true,
-			StatusRemediating:      true,
-			StatusResolved:         true,
-		},
-		StatusAwaitingApproval: {
-			StatusRemediating: true,
-			StatusCancelled:   true,
-		},
-		StatusRemediating: {
-			StatusMitigated: true,
-			StatusFailed:    true,
-		},
-		StatusMitigated: {
-			StatusResolved: true,
-		},
+	return transitions[from][to]
+}
+
+// IsClosed reports whether an incident is in a terminal state.
+func IsClosed(status string) bool {
+	return status == StatusResolved || status == StatusCancelled
+}
+
+// AllowedFrom lists the states from which an incident may move to the target.
+func AllowedFrom(to string) []string {
+	var from []string
+	for state, targets := range transitions {
+		if targets[to] {
+			from = append(from, state)
+		}
 	}
-	return allowed[from][to]
+	sort.Strings(from)
+	return from
 }
 
 func (m *ServiceManager) CreateManual(ctx context.Context, req ManualIncidentRequest, actor string) (Incident, error) {

@@ -2,6 +2,7 @@ package incidents
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/gauravgs7/argus/internal/topology"
@@ -16,11 +17,42 @@ func TestBuildDedupeKey(t *testing.T) {
 }
 
 func TestCanTransition(t *testing.T) {
-	if !CanTransition(StatusDetected, StatusTriaged) {
-		t.Fatalf("expected detected -> triaged to be allowed")
+	// Transitions the code performs must be allowed.
+	for _, step := range [][2]string{
+		{StatusDetected, StatusTriaged},                     // ack
+		{StatusDetected, StatusRCAGenerated},                // RCA on a new incident
+		{StatusTriaged, StatusRCAGenerated},                 // RCA after ack
+		{StatusRCAGenerated, StatusRemediationProposed},     // proposal without approval
+		{StatusRCAGenerated, StatusAwaitingApproval},        // proposal needing approval
+		{StatusRemediationProposed, StatusAwaitingApproval}, // later proposal needs approval
+		{StatusRCAGenerated, StatusResolved},                // operator resolve
+		{StatusAwaitingApproval, StatusResolved},            // resolve after approved work ran
+		{StatusRemediating, StatusResolved},
+	} {
+		if !CanTransition(step[0], step[1]) {
+			t.Fatalf("%s -> %s must be allowed", step[0], step[1])
+		}
 	}
-	if CanTransition(StatusResolved, StatusDetected) {
-		t.Fatalf("expected resolved -> detected to be disallowed")
+	for _, step := range [][2]string{
+		{StatusResolved, StatusDetected},
+		{StatusResolved, StatusRCAGenerated},
+		{StatusCancelled, StatusTriaged},
+		{StatusAwaitingApproval, StatusRCAGenerated},
+		{StatusAwaitingApproval, StatusTriaged},
+		{StatusRemediationProposed, StatusRCAGenerated},
+		{StatusRCAGenerated, StatusTriaged},
+	} {
+		if CanTransition(step[0], step[1]) {
+			t.Fatalf("%s -> %s must be denied", step[0], step[1])
+		}
+	}
+	for _, terminal := range []string{StatusResolved, StatusCancelled} {
+		if len(transitions[terminal]) != 0 {
+			t.Fatalf("%s must be terminal", terminal)
+		}
+	}
+	if got := AllowedFrom(StatusRCAGenerated); strings.Join(got, ",") != "detected,investigating,triaged" {
+		t.Fatalf("AllowedFrom(rca_generated)=%v", got)
 	}
 }
 

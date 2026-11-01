@@ -171,7 +171,8 @@ func (s *Service) Propose(ctx context.Context, incident incidents.Incident, cand
 		if awaitingApproval {
 			status = incidents.StatusAwaitingApproval
 		}
-		_ = s.store.UpdateIncidentStatus(ctx, incident.ID, status)
+		// Advance only; an incident already further along keeps its status.
+		_, _, _ = s.store.TransitionIncident(ctx, incident.ID, status)
 	}
 	return actions, nil
 }
@@ -251,6 +252,9 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	if err != nil {
 		return false, err
 	}
+	if incidents.IsClosed(incident.Status) {
+		return false, fmt.Errorf("%w: incident %s is %s", ErrIncidentClosed, incident.ID, incident.Status)
+	}
 
 	start := time.Now()
 	// Reserve execution before dispatch so concurrent callers and fast workers
@@ -290,6 +294,10 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 		AfterState:  map[string]any{"status": outcome.Status, "dry_run": dryRun, "executor": s.exec.Name(), "result": outcome.Result},
 	})
 }
+
+// ErrIncidentClosed reports an attempt to dispatch remediation for a resolved
+// or cancelled incident.
+var ErrIncidentClosed = errors.New("incident is closed")
 
 // ErrStateChanged reports that a remediation moved to another state while a
 // conditional transition was in flight.

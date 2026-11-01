@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -518,17 +519,37 @@ func (s *Store) GetIncident(ctx context.Context, incidentID string) (Incident, e
 	return incident, nil
 }
 
-func (s *Store) UpdateIncidentStatus(ctx context.Context, incidentID, status string) error {
-	_, err := s.q.ExecContext(ctx, `
+// ErrIncidentNotFound is returned when an incident does not exist.
+var ErrIncidentNotFound = errors.New("incident not found")
+
+// TransitionIncident moves an incident to status if the lifecycle allows it
+// from the incident's current status, checked and applied in one statement.
+// It returns the status the incident had and whether the change applied.
+func (s *Store) TransitionIncident(ctx context.Context, incidentID, status string) (string, bool, error) {
+	allowed := AllowedFrom(status)
+	var previous string
+	err := s.q.QueryRowContext(ctx, `
+		WITH current AS (SELECT status FROM incidents WHERE id = $1 FOR UPDATE)
 		UPDATE incidents
 		SET status = $2, updated_at = now(),
 		    resolved_at = CASE WHEN $2 = 'resolved' THEN now() ELSE resolved_at END
-		WHERE id = $1
-	`, incidentID, status)
-	if err != nil {
-		return fmt.Errorf("update incident status: %w", err)
+		FROM current
+		WHERE incidents.id = $1 AND current.status = ANY($3)
+		RETURNING current.status
+	`, incidentID, status, allowed).Scan(&previous)
+	if err == nil {
+		return previous, true, nil
 	}
-	return nil
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", false, fmt.Errorf("transition incident: %w", err)
+	}
+	if err := s.q.QueryRowContext(ctx, `SELECT status FROM incidents WHERE id = $1`, incidentID).Scan(&previous); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, ErrIncidentNotFound
+		}
+		return "", false, fmt.Errorf("read incident status: %w", err)
+	}
+	return previous, false, nil
 }
 
 func (s *Store) ListSignals(ctx context.Context, incidentID string) ([]Signal, error) {

@@ -2,6 +2,7 @@ package remediation_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -84,5 +85,46 @@ func TestProposalUsesIncidentEnvironment(t *testing.T) {
 	}
 	if actions[0].Status != remediation.StateApproved {
 		t.Fatalf("explicitly enabled production proposal: %s %v", actions[0].Status, actions[0].PolicyDecision)
+	}
+}
+
+func TestExecuteRefusesClosedIncident(t *testing.T) {
+	dsn := os.Getenv("ARGUS_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	metricsOnce.Do(func() { metrics = telemetry.MustRegister() })
+	store := incidents.NewStore(database)
+	incident, err := store.CreateManualIncident(ctx, incidents.ManualIncidentRequest{Title: fmt.Sprintf("closed-%d", time.Now().UnixNano()), Service: "closed-svc", Severity: "sev2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rem := incidents.RemediationAction{
+		ID: fmt.Sprintf("rem_closed_%d", time.Now().UnixNano()), IncidentID: incident.ID, ActionType: "collect_diagnostics",
+		Target: "closed-svc", Status: remediation.StateApproved, Risk: "low", IdempotencyKey: fmt.Sprintf("closed-%d", time.Now().UnixNano()),
+		ProposedBy: "test", MaxAttempts: 1, PolicyDecision: map[string]any{},
+	}
+	if err := store.CreateRemediation(ctx, rem); err != nil {
+		t.Fatal(err)
+	}
+	if _, applied, err := store.TransitionIncident(ctx, incident.ID, incidents.StatusResolved); err != nil || !applied {
+		t.Fatalf("resolve: %v %v", applied, err)
+	}
+	service := remediation.NewService(store, audit.NewService(database), policy.NewEngine(), nil, nil, metrics, nil)
+	if _, err := service.Execute(ctx, rem.ID, true, "operator-1"); !errors.Is(err, remediation.ErrIncidentClosed) {
+		t.Fatalf("execute on resolved incident: %v", err)
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateApproved {
+		t.Fatalf("remediation status changed to %s", after.Status)
 	}
 }

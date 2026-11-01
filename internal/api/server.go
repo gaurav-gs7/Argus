@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -476,8 +477,16 @@ func (s *Server) handleIncidentStateChange(w http.ResponseWriter, r *http.Reques
 		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if err := s.store.UpdateIncidentStatus(r.Context(), incidentID, state); err != nil {
+	previous, applied, err := s.store.TransitionIncident(r.Context(), incidentID, state)
+	switch {
+	case errors.Is(err, incidents.ErrIncidentNotFound):
+		common.WriteError(w, http.StatusNotFound, err.Error())
+		return
+	case err != nil:
 		common.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	case !applied:
+		common.WriteError(w, http.StatusConflict, fmt.Sprintf("incident is %s and cannot move to %s", previous, state))
 		return
 	}
 	_ = s.auditor.Write(r.Context(), audit.Entry{
@@ -486,6 +495,7 @@ func (s *Server) handleIncidentStateChange(w http.ResponseWriter, r *http.Reques
 		Action:       "incident." + state,
 		ResourceType: "incident",
 		ResourceID:   incidentID,
+		BeforeState:  map[string]any{"status": previous},
 		AfterState:   map[string]any{"status": state},
 	})
 	common.WriteJSON(w, http.StatusOK, map[string]string{"status": state})
@@ -550,7 +560,11 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 		}
 		reused, err := s.remediationService.Execute(r.Context(), remediationID, body.DryRun, actorFromRequest(r))
 		if err != nil {
-			common.WriteError(w, http.StatusBadRequest, err.Error())
+			status := http.StatusBadRequest
+			if errors.Is(err, remediation.ErrIncidentClosed) || errors.Is(err, remediation.ErrStateChanged) {
+				status = http.StatusConflict
+			}
+			common.WriteError(w, status, err.Error())
 			return
 		}
 		if reused {
@@ -564,7 +578,11 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if err := s.remediationService.Cancel(r.Context(), remediationID, actorFromRequest(r)); err != nil {
-			common.WriteError(w, http.StatusInternalServerError, err.Error())
+			status := http.StatusInternalServerError
+			if errors.Is(err, remediation.ErrStateChanged) {
+				status = http.StatusConflict
+			}
+			common.WriteError(w, status, err.Error())
 			return
 		}
 		common.WriteJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
