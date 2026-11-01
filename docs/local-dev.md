@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Docker Desktop
-- Go 1.26.5+
+- Go 1.26.10+
 - Python 3.11-3.13 if running the AI service outside Docker
 - Verdikt cloned beside Argus (Compose uses `../Verdikt`, overridable with `VERDIKT_BUILD_CONTEXT`)
 
