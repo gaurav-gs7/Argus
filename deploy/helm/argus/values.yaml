@@ -28,7 +28,7 @@ controlPlane:
     issuerURL: https://identity.example.com/realms/argus
     audience: argus-api
     roleClaim: realm_access.roles
-    roleMappings: argus-admin=admin,argus-operator=operator,argus-viewer=viewer
+    roleMappings: argus-admin=admin,argus-operator=operator,argus-viewer=viewer,argus-ingester=ingester
   aiServiceURL: ""
   # RCA corroboration backends. Empty disables that backend; RCA then stays
   # at the alert-only confidence bound for probes it cannot run.

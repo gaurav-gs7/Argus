@@ -228,6 +228,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
+// Alertmanager groups can carry many alerts; 8 MiB comfortably fits its
+// default limits while bounding memory per request.
+const maxAlertmanagerPayloadBytes = 8 << 20
+
 func (s *Server) handleAlertmanager(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -235,9 +239,13 @@ func (s *Server) handleAlertmanager(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload incidents.AlertmanagerWebhook
-	if err := common.ReadJSON(r, &payload); err != nil {
+	if err := common.ReadExternalJSON(w, r, &payload, maxAlertmanagerPayloadBytes); err != nil {
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if payload.TruncatedAlerts > 0 {
+		s.logger.Warn("alertmanager truncated alerts in a webhook; raise max_alerts or narrow grouping",
+			"truncated_alerts", payload.TruncatedAlerts, "group_key", payload.GroupKey)
 	}
 
 	result, err := s.incidentManager.IngestAlertmanagerWithResult(r.Context(), payload, actorFromRequest(r))

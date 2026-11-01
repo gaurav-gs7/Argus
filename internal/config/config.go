@@ -70,7 +70,7 @@ func Load() Config {
 		OIDCAudience:               getenv("ARGUS_OIDC_AUDIENCE", "argus-api"),
 		OIDCJWKSURL:                getenv("ARGUS_OIDC_JWKS_URL", ""),
 		OIDCRoleClaim:              getenv("ARGUS_OIDC_ROLE_CLAIM", "realm_access.roles"),
-		OIDCRoleMappings:           getenv("ARGUS_OIDC_ROLE_MAPPINGS", "argus-admin=admin,argus-operator=operator,argus-viewer=viewer"),
+		OIDCRoleMappings:           getenv("ARGUS_OIDC_ROLE_MAPPINGS", "argus-admin=admin,argus-operator=operator,argus-viewer=viewer,argus-ingester=ingester"),
 		OIDCEmailClaim:             getenv("ARGUS_OIDC_EMAIL_CLAIM", "email"),
 		OIDCDisplayNameClaim:       getenv("ARGUS_OIDC_DISPLAY_NAME_CLAIM", "preferred_username"),
 		OIDCSigningAlgs:            getcsv("ARGUS_OIDC_SIGNING_ALGS", []string{"RS256"}),

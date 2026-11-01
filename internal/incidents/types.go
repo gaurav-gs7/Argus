@@ -144,6 +144,7 @@ type IngestionStats struct {
 	ObservedRoots        int `json:"observed_roots"`
 	InferredRoots        int `json:"inferred_roots"`
 	SuppressedAlertCount int `json:"suppressed_alert_count"`
+	TruncatedAlerts      int `json:"truncated_alerts"`
 }
 
 type IngestionResult struct {
@@ -181,7 +182,11 @@ type RemediationAction struct {
 	CreatedAt      time.Time      `json:"created_at"`
 }
 
+// AlertmanagerWebhook is Alertmanager's webhook payload (version 4).
 type AlertmanagerWebhook struct {
+	Version           string              `json:"version"`
+	GroupKey          string              `json:"groupKey"`
+	TruncatedAlerts   int                 `json:"truncatedAlerts"`
 	Status            string              `json:"status"`
 	Receiver          string              `json:"receiver"`
 	ExternalURL       string              `json:"externalURL"`

@@ -21,6 +21,10 @@
       {
         "name": "argus-viewer",
         "description": "Argus read-only users"
+      },
+      {
+        "name": "argus-ingester",
+        "description": "Argus signal ingestion (Alertmanager, Judikt); no incident or remediation authority"
       }
     ]
   },
@@ -109,6 +113,32 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "argus-alertmanager",
+      "name": "Alertmanager webhook sender",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${ARGUS_ALERTMANAGER_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "argus-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "argus-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -137,6 +167,15 @@
       "serviceAccountClientId": "argus-demo-viewer",
       "realmRoles": [
         "argus-viewer"
+      ]
+    },
+    {
+      "id": "argus-alertmanager-subject",
+      "username": "service-account-argus-alertmanager",
+      "enabled": true,
+      "serviceAccountClientId": "argus-alertmanager",
+      "realmRoles": [
+        "argus-ingester"
       ]
     }
   ]

@@ -122,7 +122,7 @@ func (m *ServiceManager) IngestAlertmanagerWithResult(ctx context.Context, paylo
 		return IngestionResult{}, err
 	}
 
-	stats := IngestionStats{AlertCount: len(alerts)}
+	stats := IngestionStats{AlertCount: len(alerts), TruncatedAlerts: payload.TruncatedAlerts}
 	incidentsOut := make([]Incident, 0, len(groups))
 	for _, group := range groups {
 		groupAlerts := alertsForGroup(alerts, group)

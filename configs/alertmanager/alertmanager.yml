@@ -1,7 +1,19 @@
 route:
   receiver: argus
+  group_by: [alertname, service, environment]
 
 receivers:
   - name: argus
     webhook_configs:
       - url: http://argus-api:8080/v1/alerts/alertmanager
+        # Resolved notifications let Argus record when an incident's alerts clear.
+        send_resolved: true
+        http_config:
+          # Argus requires a verified OIDC token with the ingest_signal permission.
+          # The argus-alertmanager Keycloak client maps to the least-privilege
+          # "ingester" role. Keycloak's KC_HOSTNAME pins the issuer to
+          # http://localhost:8082 even when fetched over the compose network.
+          oauth2:
+            client_id: argus-alertmanager
+            client_secret: argus-local-alertmanager-client-secret
+            token_url: http://keycloak:8080/realms/argus/protocol/openid-connect/token

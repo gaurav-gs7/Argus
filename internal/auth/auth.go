@@ -18,6 +18,9 @@ const (
 	RoleAdmin    Role = "admin"
 	RoleOperator Role = "operator"
 	RoleViewer   Role = "viewer"
+	// RoleIngester is for machine senders such as Alertmanager or Judikt:
+	// it may submit signals and nothing else.
+	RoleIngester Role = "ingester"
 )
 
 type Permission string
@@ -374,7 +377,7 @@ func allowedSigningAlgorithm(algorithm string) bool {
 
 func validRole(role Role) bool {
 	switch role {
-	case RoleAdmin, RoleOperator, RoleViewer:
+	case RoleAdmin, RoleOperator, RoleViewer, RoleIngester:
 		return true
 	default:
 		return false
@@ -384,6 +387,9 @@ func validRole(role Role) bool {
 var permissionsByRole = map[Role]map[Permission]bool{
 	RoleViewer: {
 		PermissionView: true,
+	},
+	RoleIngester: {
+		PermissionIngestSignal: true,
 	},
 	RoleOperator: {
 		PermissionView:               true,

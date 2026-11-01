@@ -1,0 +1,39 @@
+{
+    "receiver": "argus",
+    "status": "firing",
+    "alerts": [
+        {
+            "status": "firing",
+            "labels": {
+                "alertname": "PaymentsAPIPostgresPoolSaturation",
+                "environment": "local",
+                "service": "payments-api",
+                "severity": "sev2"
+            },
+            "annotations": {
+                "summary": "pool saturated"
+            },
+            "startsAt": "2026-11-01T06:18:57Z",
+            "endsAt": "0001-01-01T00:00:00Z",
+            "generatorURL": "http://prometheus:9090/graph",
+            "fingerprint": "35ba96bfc0ca74ea"
+        }
+    ],
+    "groupLabels": {
+        "alertname": "PaymentsAPIPostgresPoolSaturation",
+        "service": "payments-api"
+    },
+    "commonLabels": {
+        "alertname": "PaymentsAPIPostgresPoolSaturation",
+        "environment": "local",
+        "service": "payments-api",
+        "severity": "sev2"
+    },
+    "commonAnnotations": {
+        "summary": "pool saturated"
+    },
+    "externalURL": "http://vm:19093",
+    "version": "4",
+    "groupKey": "{}:{alertname=\"PaymentsAPIPostgresPoolSaturation\", service=\"payments-api\"}",
+    "truncatedAlerts": 0
+}

@@ -47,6 +47,7 @@ services:
       ARGUS_DEMO_ADMIN_CLIENT_SECRET: ${ARGUS_DEMO_ADMIN_CLIENT_SECRET:-argus-local-admin-client-secret}
       ARGUS_DEMO_OPERATOR_CLIENT_SECRET: ${ARGUS_DEMO_OPERATOR_CLIENT_SECRET:-argus-local-operator-client-secret}
       ARGUS_DEMO_VIEWER_CLIENT_SECRET: ${ARGUS_DEMO_VIEWER_CLIENT_SECRET:-argus-local-viewer-client-secret}
+      ARGUS_ALERTMANAGER_CLIENT_SECRET: ${ARGUS_ALERTMANAGER_CLIENT_SECRET:-argus-local-alertmanager-client-secret}
     volumes:
       - ./configs/keycloak/argus-realm.json:/opt/keycloak/data/import/argus-realm.json:ro
     ports:
@@ -86,7 +87,7 @@ services:
       ARGUS_OIDC_AUDIENCE: ${ARGUS_OIDC_AUDIENCE:-argus-api}
       ARGUS_OIDC_JWKS_URL: ${ARGUS_OIDC_JWKS_URL:-http://keycloak:8080/realms/argus/protocol/openid-connect/certs}
       ARGUS_OIDC_ROLE_CLAIM: ${ARGUS_OIDC_ROLE_CLAIM:-realm_access.roles}
-      ARGUS_OIDC_ROLE_MAPPINGS: ${ARGUS_OIDC_ROLE_MAPPINGS:-argus-admin=admin,argus-operator=operator,argus-viewer=viewer}
+      ARGUS_OIDC_ROLE_MAPPINGS: ${ARGUS_OIDC_ROLE_MAPPINGS:-argus-admin=admin,argus-operator=operator,argus-viewer=viewer,argus-ingester=ingester}
       ARGUS_OIDC_EMAIL_CLAIM: ${ARGUS_OIDC_EMAIL_CLAIM:-email}
       ARGUS_OIDC_DISPLAY_NAME_CLAIM: ${ARGUS_OIDC_DISPLAY_NAME_CLAIM:-preferred_username}
       ARGUS_OIDC_SIGNING_ALGS: ${ARGUS_OIDC_SIGNING_ALGS:-RS256}

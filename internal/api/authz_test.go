@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gauravgs7/argus/internal/auth"
+	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/incidents"
 	"github.com/gauravgs7/argus/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -277,4 +278,57 @@ func (f fakeAuthenticator) Authenticate(_ context.Context, header string) (auth.
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestIngesterCanOnlySubmitSignals(t *testing.T) {
+	srv := &Server{
+		authenticator: fakeAuthenticator{tokens: map[string]auth.Principal{
+			"alertmanager-jwt": {ID: "https://issuer.example#alertmanager", Role: auth.RoleIngester},
+		}},
+		logger: discardLogger(),
+	}
+	handler := srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	cases := []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodPost, "/v1/alerts/alertmanager", http.StatusNoContent},
+		{http.MethodPost, "/v1/signals/manual", http.StatusNoContent},
+		{http.MethodGet, "/v1/incidents", http.StatusForbidden},
+		{http.MethodPost, "/v1/incidents/inc_1/resolve", http.StatusForbidden},
+		{http.MethodPost, "/v1/incidents/inc_1/remediations/propose", http.StatusForbidden},
+		{http.MethodPost, "/v1/remediations/rem_1/approve", http.StatusForbidden},
+		{http.MethodPost, "/v1/remediations/rem_1/execute", http.StatusForbidden},
+		{http.MethodGet, "/v1/audit", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("Authorization", "Bearer alertmanager-jwt")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("ingester %s %s = %d, want %d", tc.method, tc.path, rec.Code, tc.want)
+		}
+	}
+}
+
+func TestAlertmanagerWebhookDecodingIsTolerantAndBounded(t *testing.T) {
+	future := `{"version":"5","groupKey":"g","truncatedAlerts":2,"status":"firing","receiver":"argus","newTopLevelField":{"x":1},
+		"alerts":[{"status":"firing","labels":{"alertname":"A"},"startsAt":"2026-11-01T05:00:00Z","fingerprint":"f","newAlertField":true}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/alerts/alertmanager", strings.NewReader(future))
+	var payload incidents.AlertmanagerWebhook
+	if err := common.ReadExternalJSON(httptest.NewRecorder(), req, &payload, maxAlertmanagerPayloadBytes); err != nil {
+		t.Fatalf("a future Alertmanager field must not reject the delivery: %v", err)
+	}
+	if payload.TruncatedAlerts != 2 || len(payload.Alerts) != 1 || payload.Alerts[0].Fingerprint != "f" {
+		t.Fatalf("decoded payload=%+v", payload)
+	}
+
+	huge := `{"alerts":[{"labels":{"alertname":"` + strings.Repeat("a", 64) + `"}}],"pad":"` + strings.Repeat("x", 2048) + `"}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/alerts/alertmanager", strings.NewReader(huge))
+	if err := common.ReadExternalJSON(httptest.NewRecorder(), req, &payload, 1024); err == nil {
+		t.Fatal("oversized webhook accepted")
+	}
 }

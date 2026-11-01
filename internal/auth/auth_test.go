@@ -582,11 +582,12 @@ func TestRolePermissionMatrix(t *testing.T) {
 		PermissionReindexRunbook:     true,
 	}
 
-	for _, role := range []Role{RoleViewer, RoleOperator, RoleAdmin, Role("unknown")} {
+	for _, role := range []Role{RoleViewer, RoleOperator, RoleAdmin, RoleIngester, Role("unknown")} {
 		t.Run(string(role), func(t *testing.T) {
 			for _, permission := range permissions {
 				want := role == RoleAdmin ||
 					(role == RoleViewer && permission == PermissionView) ||
+					(role == RoleIngester && permission == PermissionIngestSignal) ||
 					(role == RoleOperator && operatorPermissions[permission])
 				if got := (Principal{Role: role}).Can(permission); got != want {
 					t.Errorf("role=%q permission=%q allowed=%t, want %t", role, permission, got, want)

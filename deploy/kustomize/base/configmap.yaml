@@ -13,7 +13,7 @@ data:
   ARGUS_OIDC_ISSUER_URL: https://identity.example.com/realms/argus
   ARGUS_OIDC_AUDIENCE: argus-api
   ARGUS_OIDC_ROLE_CLAIM: realm_access.roles
-  ARGUS_OIDC_ROLE_MAPPINGS: argus-admin=admin,argus-operator=operator,argus-viewer=viewer
+  ARGUS_OIDC_ROLE_MAPPINGS: argus-admin=admin,argus-operator=operator,argus-viewer=viewer,argus-ingester=ingester
   ARGUS_REMEDIATION_EXECUTOR: local
   ARGUS_APPROVAL_CALLBACK_BASE_URL: https://argus.example.com
   ARGUS_APPROVAL_TIMEOUT: 15m
