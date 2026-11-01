@@ -63,10 +63,11 @@ func TestGeneratePersistsQueriedEvidence(t *testing.T) {
 
 	store := incidents.NewStore(database)
 	manager := incidents.NewServiceManager(store, audit.NewService(database), 30*time.Minute)
+	// Unique per run so topology grouping cannot reuse an earlier run's incident.
 	fingerprint := fmt.Sprintf("rca-int-%d", time.Now().UnixNano())
 	created, err := manager.IngestAlertmanager(ctx, incidents.AlertmanagerWebhook{Status: "firing", Alerts: []incidents.AlertmanagerAlert{{
 		Status: "firing", StartsAt: time.Now().UTC(), Fingerprint: fingerprint,
-		Labels:      map[string]string{"alertname": "PaymentsAPIPostgresPoolSaturation", "service": "payments-api", "environment": "rca-int", "severity": "sev2"},
+		Labels:      map[string]string{"alertname": "PaymentsAPIPostgresPoolSaturation", "service": "payments-api", "environment": fingerprint, "severity": "sev2"},
 		Annotations: map[string]string{"summary": "pool saturated"},
 	}}}, "integration-test")
 	if err != nil || len(created) != 1 {

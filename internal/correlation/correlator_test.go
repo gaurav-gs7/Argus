@@ -136,6 +136,18 @@ func TestValidateRulesRejectsBrokenTables(t *testing.T) {
 			return r
 		},
 		"no hypothesis": func(r []Rule) []Rule { r[0].Hypothesis = ""; return r },
+		"unknown action": func(r []Rule) []Rule {
+			r[0].Remediations = []CandidateTemplate{{ActionType: "rm_rf", Risk: "low"}}
+			return r
+		},
+		"unknown risk": func(r []Rule) []Rule {
+			r[0].Remediations = []CandidateTemplate{{ActionType: "rollback_config", Risk: "spicy"}}
+			return r
+		},
+		"bad format": func(r []Rule) []Rule {
+			r[0].Remediations = []CandidateTemplate{{ActionType: "restart_pod", TargetLabel: "pod", TargetFormat: "local/%s/%s", Risk: "medium"}}
+			return r
+		},
 	}
 	for name, mutate := range cases {
 		rules := make([]Rule, len(base))

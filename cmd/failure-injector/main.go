@@ -29,18 +29,22 @@ func activateScenario(baseURL, scenario string) {
 }
 
 func postAlert(baseURL, scenario string) {
+	labels := map[string]string{
+		"alertname":   scenarioToAlert(scenario),
+		"service":     scenarioService(scenario),
+		"environment": "local",
+		"severity":    "sev2",
+	}
+	for key, value := range scenarioLabels(scenario) {
+		labels[key] = value
+	}
 	payload := map[string]any{
 		"status":   "firing",
 		"receiver": "argus",
 		"alerts": []map[string]any{
 			{
 				"status": "firing",
-				"labels": map[string]string{
-					"alertname":   scenarioToAlert(scenario),
-					"service":     "payments-api",
-					"environment": "local",
-					"severity":    "sev2",
-				},
+				"labels": labels,
 				"annotations": map[string]string{
 					"summary": scenarioToSummary(scenario),
 				},
@@ -51,6 +55,27 @@ func postAlert(baseURL, scenario string) {
 	}
 	body, _ := json.Marshal(payload)
 	_, _ = http.Post(baseURL+"/v1/alerts/alertmanager", "application/json", bytes.NewReader(body))
+}
+
+// scenarioService and scenarioLabels mirror demo/scenarios/*.yaml. RCA derives
+// remediation targets from alert labels, so the demo alerts carry the labels a
+// real alert rule would set for these failure modes.
+func scenarioService(scenario string) string {
+	if scenario == "nginx_5xx_spike" {
+		return "nginx"
+	}
+	return "payments-api"
+}
+
+func scenarioLabels(scenario string) map[string]string {
+	switch scenario {
+	case "redis_memory_pressure":
+		return map[string]string{"cache_key_pattern": "demo:pressure:*"}
+	case "dependency_latency":
+		return map[string]string{"degradable_feature_flag": "payments-api/optional-notifications"}
+	default:
+		return nil
+	}
 }
 
 func scenarioToAlert(scenario string) string {

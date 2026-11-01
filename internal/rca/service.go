@@ -323,7 +323,9 @@ func scoreHypotheses(incident incidents.Incident, matches []correlation.Match, r
 		best.rule.Hypothesis, service, best.confidence, AlertMatchScore, best.corroborated,
 		RefutationFactor*best.refuted, BaselineConfidence, best.cap, len(best.sources), strings.Join(best.sources, ", "),
 	)
-	result.Candidates = legacyCandidates(best.rule.ID, incident)
+	candidates, skipped := renderCandidates(best)
+	result.Candidates = candidates
+	result.Factors = append(result.Factors, skipped...)
 	return result
 }
 
@@ -427,31 +429,37 @@ func probeTimelineEvents(incidentID string, items []incidents.RCAEvidence) []inc
 	return events
 }
 
-// legacyCandidates are the pre-label remediation candidates per rule.
-func legacyCandidates(rule correlation.RuleID, incident incidents.Incident) []Candidate {
-	switch rule {
-	case correlation.RulePostgresConnectionExhaustion:
-		return []Candidate{
-			{ActionType: "drain_postgres_connections", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-			{ActionType: "resize_connection_pool", Target: incident.Service, Parameters: map[string]any{"size": 20}, Risk: "medium", RequiresApproval: true},
-			{ActionType: "restart_pod", Target: "local/" + incident.Service, Risk: "medium", RequiresApproval: true},
-		}
-	case correlation.RuleRedisMemoryPressure:
-		return []Candidate{{ActionType: "purge_cache", Target: "demo:pressure:*", Parameters: map[string]any{"max_keys": 500}, Risk: "medium", RequiresApproval: true}}
-	case correlation.RuleNginxUpstreamConfig:
-		return []Candidate{
-			{ActionType: "rollback_config", Target: "nginx", Risk: "medium", RequiresApproval: true},
-			{ActionType: "reload_nginx", Target: "nginx", Risk: "medium", RequiresApproval: true},
-		}
-	case correlation.RuleDependencyLatency:
-		return []Candidate{{ActionType: "toggle_feature_flag", Target: "payments-api/optional-notifications", Parameters: map[string]any{"enabled": false}, Risk: "medium", RequiresApproval: true}}
-	case correlation.RuleBadConfigRollout:
-		return []Candidate{
-			{ActionType: "rollback_config", Target: incident.Service, Risk: "medium", RequiresApproval: true},
-			{ActionType: "restart_pod", Target: "local/" + incident.Service, Risk: "medium", RequiresApproval: true},
+// renderCandidates derives remediation targets from the alert that matched the
+// rule. Candidates without a safe target are dropped with a recorded reason;
+// if none survive, only diagnostics are proposed.
+func renderCandidates(score hypothesisScore) ([]Candidate, []string) {
+	match := score.matches[0]
+	for _, candidate := range score.matches {
+		if candidate.Service == score.run.Service {
+			match = candidate
+			break
 		}
 	}
-	return []Candidate{diagnostics(incident.Service)}
+	var candidates []Candidate
+	var skipped []string
+	for _, template := range score.rule.Remediations {
+		target, parameters, reason := template.Render(match.Service, match.Labels)
+		if reason != "" {
+			skipped = append(skipped, fmt.Sprintf("remediation %s not proposed: %s", template.ActionType, reason))
+			continue
+		}
+		if len(parameters) == 0 {
+			parameters = nil
+		}
+		candidates = append(candidates, Candidate{
+			ActionType: template.ActionType, Target: target, Parameters: parameters,
+			Risk: template.Risk, RequiresApproval: template.Risk != "low",
+		})
+	}
+	if len(candidates) == 0 {
+		candidates = []Candidate{diagnostics(match.Service)}
+	}
+	return candidates, skipped
 }
 
 func applyTopologyFallback(incident incidents.Incident, topologyAnalysis incidents.IncidentTopology, result analysis) analysis {

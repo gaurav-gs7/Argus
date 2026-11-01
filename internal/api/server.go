@@ -297,24 +297,28 @@ func (s *Server) handleManualSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Service == "" {
-		body.Service = "payments-api"
+		body.Service = scenarioService(body.Scenario)
 	}
 	if body.Severity == "" {
 		body.Severity = "sev2"
 	}
 
+	labels := map[string]string{
+		"alertname":   scenarioToAlert(body.Scenario),
+		"service":     body.Service,
+		"environment": "local",
+		"severity":    body.Severity,
+	}
+	for key, value := range scenarioLabels(body.Scenario) {
+		labels[key] = value
+	}
 	payload := incidents.AlertmanagerWebhook{
 		Status:   "firing",
 		Receiver: "manual",
 		Alerts: []incidents.AlertmanagerAlert{
 			{
 				Status: "firing",
-				Labels: map[string]string{
-					"alertname":   scenarioToAlert(body.Scenario),
-					"service":     body.Service,
-					"environment": "local",
-					"severity":    body.Severity,
-				},
+				Labels: labels,
 				Annotations: map[string]string{
 					"summary": scenarioToSummary(body.Scenario),
 				},
@@ -984,6 +988,27 @@ func firstHeader(r *http.Request, names ...string) string {
 func pretty(body any) string {
 	data, _ := json.Marshal(body)
 	return string(data)
+}
+
+// scenarioService and scenarioLabels mirror demo/scenarios/*.yaml. RCA derives
+// remediation targets from alert labels, so the demo alerts carry the labels a
+// real alert rule would set for these failure modes.
+func scenarioService(scenario string) string {
+	if scenario == "nginx_5xx_spike" {
+		return "nginx"
+	}
+	return "payments-api"
+}
+
+func scenarioLabels(scenario string) map[string]string {
+	switch scenario {
+	case "redis_memory_pressure":
+		return map[string]string{"cache_key_pattern": "demo:pressure:*"}
+	case "dependency_latency":
+		return map[string]string{"degradable_feature_flag": "payments-api/optional-notifications"}
+	default:
+		return nil
+	}
 }
 
 func scenarioToAlert(scenario string) string {

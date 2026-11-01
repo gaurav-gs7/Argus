@@ -281,10 +281,18 @@ func TestFailingBackendsAreNeverCounted(t *testing.T) {
 	if !near(got.Confidence, AlertMatchScore) || got.Score.Corroborated != 0 || got.Score.Refuted != 0 {
 		t.Fatalf("failing backends changed the score: %+v", got.Score)
 	}
-	for _, factor := range got.Factors[1 : len(got.Factors)-1] {
+	probeFactors := 0
+	for _, factor := range got.Factors {
+		if !strings.Contains(factor, " probe ") {
+			continue
+		}
+		probeFactors++
 		if !strings.Contains(factor, "unavailable: connection refused (not counted)") {
 			t.Fatalf("factor hides the failure: %q", factor)
 		}
+	}
+	if probeFactors != 3 {
+		t.Fatalf("expected 3 probe factors, got %d: %v", probeFactors, got.Factors)
 	}
 }
 
@@ -468,5 +476,95 @@ func TestTopologyFallbackNamesFailureDomainWithoutInventingFailureMode(t *testin
 		[]incidents.Signal{alert("DependencyFailure", "checkout-api", nil)}, topo)
 	if inferred.Confidence != 0.58 {
 		t.Fatalf("inferred topology confidence=%v, want 0.58", inferred.Confidence)
+	}
+}
+
+func candidateTargets(candidates []Candidate) map[string]string {
+	out := map[string]string{}
+	for _, c := range candidates {
+		out[c.ActionType] = c.Target
+	}
+	return out
+}
+
+func TestRemediationTargetsComeFromTheMatchedAlert(t *testing.T) {
+	svc := newTestService(nil)
+	cases := []struct {
+		name   string
+		signal incidents.Signal
+		want   map[string]string
+	}{
+		{"postgres uses alert service and pod label", alert("PaymentsAPIPostgresConnectionExhaustion", "orders-api", map[string]string{"pod": "orders-api-7c9d"}),
+			map[string]string{"drain_postgres_connections": "orders-api", "resize_connection_pool": "orders-api", "restart_pod": "local/orders-api-7c9d"}},
+		{"pod falls back to service", alert("PaymentsAPIBadConfigRollout", "billing", nil),
+			map[string]string{"rollback_config": "billing", "restart_pod": "local/billing"}},
+		{"nginx targets the alerting edge service", alert("Nginx5xxSpike", "edge-proxy", nil),
+			map[string]string{"rollback_config": "edge-proxy", "reload_nginx": "edge-proxy"}},
+		{"redis uses the cache_key_pattern label", alert("PaymentsAPIRedisMemoryPressure", "payments-api", map[string]string{"cache_key_pattern": "demo:pressure:*"}),
+			map[string]string{"purge_cache": "demo:pressure:*"}},
+		{"latency uses the degradable_feature_flag label", alert("PaymentsAPIDependencyLatency", "checkout-api", map[string]string{"degradable_feature_flag": "checkout-api/async-confirmation"}),
+			map[string]string{"toggle_feature_flag": "checkout-api/async-confirmation"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(svc, incidentFor("incident-root"), tc.signal)
+			if targets := candidateTargets(got.Candidates); !reflect.DeepEqual(targets, tc.want) {
+				t.Fatalf("targets=%v want %v", targets, tc.want)
+			}
+			for _, c := range got.Candidates {
+				if c.Risk != "medium" || !c.RequiresApproval {
+					t.Fatalf("candidate lost its approval requirement: %+v", c)
+				}
+			}
+		})
+	}
+}
+
+func TestMissingOrUnsafeTargetsFallBackToDiagnostics(t *testing.T) {
+	svc := newTestService(nil)
+	cases := []struct {
+		name   string
+		signal incidents.Signal
+		reason string
+	}{
+		{"redis without key pattern", alert("PaymentsAPIRedisMemoryPressure", "payments-api", nil), "alert has no label cache_key_pattern"},
+		{"latency without flag", alert("PaymentsAPIDependencyLatency", "notification-api", nil), "alert has no label degradable_feature_flag"},
+		{"flag not allow-listed", alert("PaymentsAPIDependencyLatency", "payments-api", map[string]string{"degradable_feature_flag": "payments-api/delete-everything"}), "rejected by action catalog"},
+		{"unscoped cache pattern", alert("PaymentsAPIRedisMemoryPressure", "payments-api", map[string]string{"cache_key_pattern": "*"}), "rejected by action catalog"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(svc, incidentFor("payments-api"), tc.signal)
+			if len(got.Candidates) != 1 || got.Candidates[0].ActionType != "collect_diagnostics" || got.Candidates[0].RequiresApproval {
+				t.Fatalf("candidates=%+v", got.Candidates)
+			}
+			if !strings.Contains(strings.Join(got.Factors, "\n"), tc.reason) {
+				t.Fatalf("factors do not explain the dropped candidate (%q): %v", tc.reason, got.Factors)
+			}
+		})
+	}
+}
+
+func TestPodLabelInjectionIsRejected(t *testing.T) {
+	got := run(newTestService(nil), incidentFor("payments-api"),
+		alert("PaymentsAPIPostgresConnectionExhaustion", "payments-api", map[string]string{"pod": "../../etc"}))
+	targets := candidateTargets(got.Candidates)
+	if _, ok := targets["restart_pod"]; ok {
+		t.Fatalf("unsafe pod label produced a restart target: %v", targets)
+	}
+	if targets["drain_postgres_connections"] != "payments-api" {
+		t.Fatalf("valid candidates should survive: %v", targets)
+	}
+}
+
+func TestNoHardcodedDemoTargets(t *testing.T) {
+	for _, rule := range correlation.DefaultRules() {
+		for _, template := range rule.Remediations {
+			for _, banned := range []string{"payments-api", "demo:", "nginx"} {
+				if strings.Contains(template.TargetFormat, banned) {
+					t.Fatalf("rule %s hardcodes target %q", rule.ID, template.TargetFormat)
+				}
+			}
+		}
 	}
 }
