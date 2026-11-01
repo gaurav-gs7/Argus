@@ -30,14 +30,14 @@ The correctness path does not depend on an LLM:
 5. Reuse or promote an open incident under a PostgreSQL advisory lock
 6. Persist every alert as evidence while suppressing downstream incident creation
 7. Build a deterministic timeline and topology snapshot
-8. Generate rule-based RCA hypotheses
+8. Generate rule-based RCA hypotheses and query Prometheus/Loki to corroborate them
 9. Propose typed remediations
 10. Apply policy checks and require approval for medium-risk operations
 11. Validate typed target and parameter bounds again in the worker
 12. Execute through registered handlers using a durable idempotency receipt
 13. Append state changes to the serialized SHA-256 audit hash chain; approval transitions share the audit transaction, while full atomic coupling remains a documented gap for other paths
 
-RCA evidence uses explicit rule IDs and fixed `confidence x weight` contributions with bounded topology adjustments. The complete formula, coverage matrix, fallbacks, verification tests, and limitations are documented in [Deterministic RCA Scoring](rca-scoring.md).
+RCA selects a failure mode only by exact alertname or an explicit `argus_failure_mode` label, then corroborates or refutes it with PromQL and LogQL probes against Prometheus and Loki. Confidence is capped by the number of independent sources that agree, and contradicted hypotheses propose diagnostics only. The complete formula, coverage matrix, fallbacks, verification tests, and limitations are documented in [Deterministic RCA Scoring](rca-scoring.md).
 
 ## Topology Correlation
 

@@ -1,65 +1,150 @@
 {
   "scenario": "postgres_connection_exhaustion",
   "incident": {
+    "dedupe_key": "payments-api:PaymentsAPIPostgresConnectionExhaustion:local:manual-postgres_connection_exhaustion",
     "service": "payments-api",
     "severity": "sev2",
-    "status": "awaiting_approval",
-    "dedupe_key": "payments-api:postgres_connection_exhaustion:local:manual-postgres_connection_exhaustion"
+    "status": "awaiting_approval"
   },
   "timeline": [
     {
-      "type": "correlated_evidence",
-      "summary": "postgres connection pool saturation crossed threshold",
-      "confidence": 0.91
+      "source": "alertmanager",
+      "summary": "PaymentsAPIPostgresConnectionExhaustion fired for payments-api",
+      "type": "alert_received"
     },
     {
-      "type": "correlated_evidence",
-      "summary": "application logs indicate postgres connection acquisition timeout",
-      "confidence": 0.87
+      "source": "prometheus",
+      "summary": "postgres_pool_utilisation: connection pool utilisation is at or above 90% (observed 0.95, threshold \u003e= 0.9)",
+      "type": "probe_corroborated"
     },
     {
-      "type": "correlated_evidence",
-      "summary": "payments-api error rate increased during the incident window",
-      "confidence": 0.82
+      "source": "prometheus",
+      "summary": "postgres_service_error_ratio: 5xx response ratio is at or above 5% (observed 1, threshold \u003e= 0.05)",
+      "type": "probe_corroborated"
+    },
+    {
+      "source": "loki",
+      "summary": "postgres_acquisition_timeout_logs: logs contain postgres connection acquisition timeouts (observed 320, threshold \u003e= 1)",
+      "type": "probe_corroborated"
     }
   ],
   "rca": {
-    "primary_hypothesis": "PostgreSQL connection pool exhaustion",
-    "confidence": 0.95,
-    "evidence": [
-      "postgres connection pool saturation crossed threshold",
-      "application logs indicate postgres connection acquisition timeout",
-      "payments-api error rate increased during the incident window"
+    "candidates": [
+      {
+        "action_type": "drain_postgres_connections",
+        "target": "payments-api",
+        "risk": "medium",
+        "requires_approval": true
+      },
+      {
+        "action_type": "resize_connection_pool",
+        "target": "payments-api",
+        "parameters": {
+          "size": 20
+        },
+        "risk": "medium",
+        "requires_approval": true
+      },
+      {
+        "action_type": "restart_pod",
+        "target": "local/payments-api",
+        "risk": "medium",
+        "requires_approval": true
+      }
     ],
+    "confidence": 0.95,
+    "contributing_factors": [
+      "alert match via alertname PaymentsAPIPostgresConnectionExhaustion (+0.45)",
+      "prometheus probe postgres_pool_utilisation corroborated: observed 0.95 \u003e= 0.9 (+0.20)",
+      "prometheus probe postgres_service_error_ratio (symptom) corroborated: observed 1 \u003e= 0.05 (+0.10)",
+      "loki probe postgres_acquisition_timeout_logs corroborated: observed 320 \u003e= 1 (+0.20)",
+      "independent sources: alertmanager, loki, prometheus (cap 0.95)"
+    ],
+    "evidence": [
+      "alertmanager: alert PaymentsAPIPostgresConnectionExhaustion fired for payments-api",
+      "prometheus: connection pool utilisation is at or above 90% (observed 0.95 \u003e= 0.9)",
+      "prometheus (symptom): 5xx response ratio is at or above 5% (observed 1 \u003e= 0.05)",
+      "loki: logs contain postgres connection acquisition timeouts (observed 320 \u003e= 1)"
+    ],
+    "evidence_items": [
+      {
+        "rule_id": "postgres_connection_exhaustion",
+        "kind": "alert",
+        "source": "alertmanager",
+        "reference": "PaymentsAPIPostgresConnectionExhaustion",
+        "service": "payments-api",
+        "status": "matched",
+        "weight": 0.45,
+        "claim": "alert matched by alertname PaymentsAPIPostgresConnectionExhaustion",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "postgres_connection_exhaustion",
+        "kind": "probe",
+        "source": "prometheus",
+        "reference": "postgres_pool_utilisation",
+        "service": "payments-api",
+        "query": "max(db_connection_pool_in_use{service=\"payments-api\"} / db_connection_pool_max{service=\"payments-api\"})",
+        "status": "corroborated",
+        "value": 0.95,
+        "comparator": "\u003e=",
+        "threshold": 0.9,
+        "weight": 0.2,
+        "claim": "connection pool utilisation is at or above 90%",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "postgres_connection_exhaustion",
+        "kind": "probe",
+        "source": "prometheus",
+        "reference": "postgres_service_error_ratio",
+        "service": "payments-api",
+        "query": "sum(rate(http_requests_total{service=\"payments-api\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"payments-api\"}[5m]))",
+        "status": "corroborated",
+        "value": 1,
+        "comparator": "\u003e=",
+        "threshold": 0.05,
+        "weight": 0.1,
+        "claim": "5xx response ratio is at or above 5%",
+        "symptom": true,
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "postgres_connection_exhaustion",
+        "kind": "probe",
+        "source": "loki",
+        "reference": "postgres_acquisition_timeout_logs",
+        "service": "payments-api",
+        "query": "sum(count_over_time({service=\"payments-api\"} |= \"connection acquisition timeout\" [10m]))",
+        "status": "corroborated",
+        "value": 320,
+        "comparator": "\u003e=",
+        "threshold": 1,
+        "weight": 0.2,
+        "claim": "logs contain postgres connection acquisition timeouts",
+        "observed_at": "2026-11-01T05:00:00Z"
+      }
+    ],
+    "primary_hypothesis": "PostgreSQL connection pool exhaustion",
     "score_breakdown": {
+      "rule_id": "postgres_connection_exhaustion",
       "baseline": 0.35,
-      "items": [
-        {
-          "rule_id": "postgres_connection_exhaustion",
-          "type": "metric_anomaly",
-          "confidence": 0.91,
-          "weight": 0.34,
-          "contribution": 0.3094
-        },
-        {
-          "rule_id": "postgres_connection_exhaustion",
-          "type": "log_pattern",
-          "confidence": 0.87,
-          "weight": 0.29,
-          "contribution": 0.2523
-        },
-        {
-          "rule_id": "postgres_connection_exhaustion",
-          "type": "service_impact",
-          "confidence": 0.82,
-          "weight": 0.17,
-          "contribution": 0.1394
-        }
+      "alert_match": 0.45,
+      "corroborated": 0.5,
+      "refuted": 0,
+      "refutation_penalty": 0,
+      "raw": 0.95,
+      "sources": [
+        "alertmanager",
+        "loki",
+        "prometheus"
       ],
-      "evidence_score": 0.7011,
-      "final_confidence": 0.95,
-      "capped": true
-    }
+      "source_cap": 0.95,
+      "topology_adjustment": 0,
+      "contradicted": false,
+      "final": 0.95
+    },
+    "summary": "PostgreSQL connection pool exhaustion likely impacted payments-api. Confidence 0.9500 = min(max(0.45 alert match + 0.50 corroborated - 0.00 refutation penalty, 0.35), 0.95 cap for 3 independent source(s): alertmanager, loki, prometheus)."
   },
   "remediations": [
     {

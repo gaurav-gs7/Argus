@@ -356,8 +356,12 @@ func supportingEvidence(score hypothesisScore) []string {
 	}
 	for _, result := range score.run.Results {
 		if result.Status == evidence.StatusCorroborated {
+			source := string(result.Backend)
+			if result.Symptom {
+				source += " (symptom)"
+			}
 			out = appendEvidence(out, fmt.Sprintf("%s: %s (observed %s %s %s)",
-				result.Backend, result.Claim, formatValue(*result.Value), result.Comparator, formatValue(result.Threshold)))
+				source, result.Claim, formatValue(*result.Value), result.Comparator, formatValue(result.Threshold)))
 		}
 	}
 	return out

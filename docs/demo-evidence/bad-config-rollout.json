@@ -1,52 +1,118 @@
 {
   "scenario": "bad_config_rollout",
   "incident": {
+    "dedupe_key": "payments-api:PaymentsAPIBadConfigRollout:local:manual-bad_config_rollout",
     "service": "payments-api",
     "severity": "sev2",
-    "status": "awaiting_approval",
-    "dedupe_key": "payments-api:bad_config_rollout:local:manual-bad_config_rollout"
+    "status": "awaiting_approval"
   },
   "timeline": [
     {
-      "type": "correlated_evidence",
-      "summary": "configuration rollout preceded service errors",
-      "confidence": 0.93
+      "source": "alertmanager",
+      "summary": "PaymentsAPIBadConfigRollout fired for payments-api",
+      "type": "alert_received"
     },
     {
-      "type": "correlated_evidence",
-      "summary": "runtime logs contain config or connection errors",
-      "confidence": 0.85
+      "source": "loki",
+      "summary": "config_parse_error_logs: logs contain configuration parse errors (observed 2960, threshold \u003e= 1)",
+      "type": "probe_corroborated"
+    },
+    {
+      "source": "prometheus",
+      "summary": "config_service_error_ratio: 5xx response ratio is at or above 5% (observed 0.9135, threshold \u003e= 0.05)",
+      "type": "probe_corroborated"
     }
   ],
   "rca": {
-    "primary_hypothesis": "Bad config rollout introduced an invalid runtime configuration",
-    "confidence": 0.8795,
-    "evidence": [
-      "configuration rollout preceded service errors",
-      "runtime logs contain config or connection errors"
+    "candidates": [
+      {
+        "action_type": "rollback_config",
+        "target": "payments-api",
+        "risk": "medium",
+        "requires_approval": true
+      },
+      {
+        "action_type": "restart_pod",
+        "target": "local/payments-api",
+        "risk": "medium",
+        "requires_approval": true
+      }
     ],
+    "confidence": 0.8,
+    "contributing_factors": [
+      "alert match via alertname PaymentsAPIBadConfigRollout (+0.45)",
+      "loki probe config_parse_error_logs corroborated: observed 2960 \u003e= 1 (+0.25)",
+      "prometheus probe config_service_error_ratio (symptom) corroborated: observed 0.9135 \u003e= 0.05 (+0.10)",
+      "independent sources: alertmanager, loki (cap 0.80)"
+    ],
+    "evidence": [
+      "alertmanager: alert PaymentsAPIBadConfigRollout fired for payments-api",
+      "loki: logs contain configuration parse errors (observed 2960 \u003e= 1)",
+      "prometheus (symptom): 5xx response ratio is at or above 5% (observed 0.9135 \u003e= 0.05)"
+    ],
+    "evidence_items": [
+      {
+        "rule_id": "bad_config_rollout",
+        "kind": "alert",
+        "source": "alertmanager",
+        "reference": "PaymentsAPIBadConfigRollout",
+        "service": "payments-api",
+        "status": "matched",
+        "weight": 0.45,
+        "claim": "alert matched by alertname PaymentsAPIBadConfigRollout",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "bad_config_rollout",
+        "kind": "probe",
+        "source": "loki",
+        "reference": "config_parse_error_logs",
+        "service": "payments-api",
+        "query": "sum(count_over_time({service=\"payments-api\"} |~ \"config parse|invalid config\" [10m]))",
+        "status": "corroborated",
+        "value": 2960,
+        "comparator": "\u003e=",
+        "threshold": 1,
+        "weight": 0.25,
+        "claim": "logs contain configuration parse errors",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "bad_config_rollout",
+        "kind": "probe",
+        "source": "prometheus",
+        "reference": "config_service_error_ratio",
+        "service": "payments-api",
+        "query": "sum(rate(http_requests_total{service=\"payments-api\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"payments-api\"}[5m]))",
+        "status": "corroborated",
+        "value": 0.9135,
+        "comparator": "\u003e=",
+        "threshold": 0.05,
+        "weight": 0.1,
+        "claim": "5xx response ratio is at or above 5%",
+        "symptom": true,
+        "observed_at": "2026-11-01T05:00:00Z"
+      }
+    ],
+    "primary_hypothesis": "Bad config rollout introduced an invalid runtime configuration",
     "score_breakdown": {
+      "rule_id": "bad_config_rollout",
       "baseline": 0.35,
-      "items": [
-        {
-          "rule_id": "bad_config_rollout",
-          "type": "config_event",
-          "confidence": 0.93,
-          "weight": 0.35,
-          "contribution": 0.3255
-        },
-        {
-          "rule_id": "bad_config_rollout",
-          "type": "log_pattern",
-          "confidence": 0.85,
-          "weight": 0.24,
-          "contribution": 0.204
-        }
+      "alert_match": 0.45,
+      "corroborated": 0.35,
+      "refuted": 0,
+      "refutation_penalty": 0,
+      "raw": 0.8,
+      "sources": [
+        "alertmanager",
+        "loki"
       ],
-      "evidence_score": 0.5295,
-      "final_confidence": 0.8795,
-      "capped": false
-    }
+      "source_cap": 0.8,
+      "topology_adjustment": 0,
+      "contradicted": false,
+      "final": 0.8
+    },
+    "summary": "Bad config rollout introduced an invalid runtime configuration likely impacted payments-api. Confidence 0.8000 = min(max(0.45 alert match + 0.35 corroborated - 0.00 refutation penalty, 0.35), 0.80 cap for 2 independent source(s): alertmanager, loki)."
   },
   "remediations": [
     {

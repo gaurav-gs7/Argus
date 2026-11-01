@@ -10,7 +10,7 @@ It is designed to feel like an internal reliability platform rather than a gener
 
 - incidents are created from observability signals
 - dependency-aware correlation collapses downstream alert storms into one root incident
-- RCA is built from deterministic evidence first
+- RCA is built from deterministic evidence first: alerts select a failure mode by structured identity, then Prometheus and Loki queries corroborate or refute it
 - the LLM is advisory only and never in the correctness path
 - Verdikt governs every AI remediation proposal in policy-only mode
 - remediations are typed, idempotent, policy-gated, and recorded in a tamper-evident audit ledger
@@ -18,7 +18,7 @@ It is designed to feel like an internal reliability platform rather than a gener
 
 ## Why This Isn't A Log Chatbot
 
-An LLM agent that owns RCA must infer causality from incomplete, attacker-influenceable telemetry; its conclusion can change between runs, invent evidence, group symptoms incorrectly, and leave no reproducible decision path before invoking a tool. Argus instead normalizes and stores every signal, correlates incidents through a persisted service graph, ranks hypotheses with fixed evidence rules and inspectable arithmetic, and permits only typed actions through deterministic policy, idempotency, and identity-bound approval. The LLM receives bounded structured evidence only after that work, so it can summarize or explain a recommendation but cannot alter the evidence, score, policy decision, approval, or execution; if the model is unavailable or returns invalid output, the deterministic incident pipeline still works.
+An LLM agent that owns RCA must infer causality from incomplete, attacker-influenceable telemetry; its conclusion can change between runs, invent evidence, group symptoms incorrectly, and leave no reproducible decision path before invoking a tool. Argus instead normalizes and stores every signal, correlates incidents through a persisted service graph, selects hypotheses by structured alert identity and scores them only on evidence it actually queried from Prometheus and Loki, and permits only typed actions through deterministic policy, idempotency, and identity-bound approval. The LLM receives bounded structured evidence only after that work, so it can summarize or explain a recommendation but cannot alter the evidence, score, policy decision, approval, or execution; if the model is unavailable or returns invalid output, the deterministic incident pipeline still works.
 
 ## Judikt Finding Ingestion
 
@@ -35,7 +35,7 @@ This repository is intentionally optimized for local development on a MacBook Ai
 - NATS JetStream for durable event and remediation delivery
 - Redis for lightweight cache and coordination
 - OIDC/JWT authentication with a resource-capped local Keycloak realm
-- Prometheus, Alertmanager, Loki, Grafana, and OTel Collector for observability
+- Prometheus, Alertmanager, Loki, Grafana, and OTel Collector for observability; Prometheus and Loki are also the RCA evidence backends
 - Docker Compose as the low-resource local default
 - Helm and Kustomize packaging as an undeployed production stretch path
 
@@ -95,76 +95,49 @@ Current measured baselines are `27.3%` across all Go statements and `54.5%` acro
 | Approval integration | Approval/expiry state and audit atomicity, Slack identity/reason binding, concurrent execution reservation, and publish rollback | `approval-integration` job |
 | OIDC and RBAC E2E | JWT signature, issuer/audience/role claims, viewer/operator/admin boundaries, and immutable actor identity against local Keycloak | `make oidc-test` |
 | AI adversarial tests | Nine prompt-injection, malformed tool output, candidate allow-list, topology contract, Verdikt `PROPOSE_ONLY`, internal auth, and AI metric checks | `make ai-test` |
-| Deterministic RCA evaluation | Five scenario scores, replay stability, evidence dedupe, tie-breaks, topology bounds, and safe fallback arithmetic | `make rca-eval` |
+| Deterministic RCA evaluation | Structured rule matching, queried-evidence scoring, refutation, unavailable backends, label injection, replay stability, topology bounds, and recomputed demo evidence | `make rca-eval` |
 | Artifact and supply-chain checks | `go vet`, `govulncheck`, portable docs, Compose, Helm/Kustomize, Prometheus, Alertmanager, OPA, JSON/shell validation, and production image builds | `quality` job |
 
 Coverage is intentionally reported without disguising service-backed gaps. The repository-wide profile runs without PostgreSQL or NATS, so conditional database/queue integration bodies do not raise its percentage; those paths are instead required in dedicated CI jobs. A passing gate means the listed contracts ran and the measured coverage did not regress below the floors. It does not mean every production failure mode is tested; the remaining outage and crash-injection gaps are listed in [Threat Model And Explicit Limitations](docs/threat-model.md).
 
 ## Deterministic RCA Scoring
 
-Argus is rule-based; "deterministic" means the same persisted signals and topology always produce the same evidence, arithmetic, winner, and fallback without an LLM or random sampling. The correlator assigns explicit rule IDs, deduplicates evidence by `rule_id + type + source + summary`, and scores each hypothesis with:
+Argus is rule-based; "deterministic" means the same persisted signals and the same probe results always produce the same hypothesis, arithmetic, and candidates without an LLM or random sampling. Probe results are persisted with every report, so any score can be replayed.
+
+A hypothesis is selected only by structured alert identity: an exact `alertname` from the compiled rule table or an explicit `argus_failure_mode` label. Annotation text never selects a rule. Each matched rule then sends PromQL and LogQL instant queries, scoped to the alert's `service` label, to the configured Prometheus and Loki. A probe is `corroborated` or `refuted` only when a backend actually returned a sample; unconfigured, failing, or empty backends are recorded with the reason and never counted.
 
 ```text
-evidence_score = sum(evidence_confidence * evidence_weight)
-final_confidence = clamp(0.35 + evidence_score, 0.35, 0.95)
+raw        = 0.45 alert match + Σ corroborated weight - 0.5 x Σ refuted weight
+confidence = clamp(raw, 0.35, cap)    cap = 0.55 / 0.80 / 0.95 for 1 / 2 / 3 independent sources
 ```
 
-| Rule | Normalized signal match | Evidence arithmetic | No-topology result |
-| --- | --- | --- | --- |
-| PostgreSQL exhaustion | `postgres` AND `connection` | `0.91x0.34 + 0.87x0.29 + 0.82x0.17` | `0.95` (capped) |
-| Redis pressure | `redis` AND `memory` | `0.86x0.31 + 0.82x0.22` | `0.7970` |
-| Nginx upstream/config | `nginx` AND `5xx` | `0.89x0.30 + 0.76x0.20` | `0.7690` |
-| Dependency latency | `notification` OR `latency` | `0.84x0.30 + 0.77x0.18` | `0.7406` |
-| Bad config rollout | `config` OR `parse` OR `rollout` | `0.93x0.35 + 0.85x0.24` | `0.8795` |
-
-An observed topology root adds `0.03`, still capped at `0.95`; an inferred root adds nothing. If signal rules do not identify a failure mode, topology-only evidence yields `0.72` for an observed root or `0.58` for an inferred root and permits diagnostics only. With neither signal nor topology evidence, Argus returns `0.35` and `collect_diagnostics`. Equal hypothesis scores use lexical name ordering.
-
-Each RCA report includes the individual `confidence x weight = contribution` factors. The full [scoring specification and trust boundary](docs/rca-scoring.md), [table-driven score tests](internal/rca/service_test.go), and [committed scenario evidence](docs/demo-evidence/README.md) make these claims reproducible. These values are operational heuristics, not statistical probabilities, and the current v1 text classifier does not independently attest that a canonical metric/log/trace came from its named backend.
+The sources are the alert itself, plus Prometheus and Loki when a cause-specific probe on that backend corroborates; symptom probes such as error ratio or latency add weight but not sources, because every outage produces them. One alert alone tops out at 0.45; reaching 0.95 requires both backends to agree on the cause. When refuting evidence outweighs corroboration, the report says the evidence contradicts the alert and proposes diagnostics only. Remediation targets come from the matched alert's labels (`service`, `pod`, `cache_key_pattern`, `degradable_feature_flag`) and must pass the action catalog; nothing is hardcoded.
 
 ### Worked Evidence Chain
 
-For `PaymentsAPIPostgresConnectionExhaustion` with a `postgres connection acquisition timeout` annotation:
+Recorded from a live run: the demo `payments-api` in its PostgreSQL scenario, scraped by Prometheus 2.53 and pushing logs to Loki 3.0.
 
 ```text
-persisted signal
-  -> normalized name + source + type + JSON body
-  -> rule_id: postgres_connection_exhaustion
-  -> pool saturation:    0.91 x 0.34 = 0.3094
-  -> acquisition timeout: 0.87 x 0.29 = 0.2523
-  -> service impact:      0.82 x 0.17 = 0.1394
-  -> evidence_score: 0.7011
-  -> clamp(0.35 + 0.7011, 0.35, 0.95) = 0.9500
-  -> typed candidates: drain connections, resize pool, restart pod
-  -> Go policy + human approval; never direct LLM execution
+alert PaymentsAPIPostgresConnectionExhaustion (alertname match)        +0.45
+prometheus  max(db_connection_pool_in_use / db_connection_pool_max)    0.95 >= 0.9    +0.20
+prometheus  5xx ratio over 5m (symptom: weight only, not a source)     1 >= 0.05      +0.10
+loki        count_over_time(|= "connection acquisition timeout" [10m]) 320 >= 1       +0.20
+raw 0.95, sources alertmanager + prometheus + loki -> cap 0.95 -> confidence 0.95
+typed candidates: drain connections, resize pool, restart pod (targets from alert labels)
+-> Go policy + human approval; never direct LLM execution
 ```
 
-Representative stored RCA output:
-
-```json
-{
-  "primary_hypothesis": "PostgreSQL connection pool exhaustion",
-  "confidence": 0.95,
-  "model_backend": "deterministic",
-  "evidence": [
-    "postgres connection pool saturation crossed threshold",
-    "application logs indicate postgres connection acquisition timeout",
-    "payments-api error rate increased during the incident window"
-  ],
-  "contributing_factors": [
-    "metric_anomaly from prometheus (confidence 0.91 x weight 0.34 = 0.3094)",
-    "log_pattern from loki (confidence 0.87 x weight 0.29 = 0.2523)",
-    "service_impact from alertmanager (confidence 0.82 x weight 0.17 = 0.1394)"
-  ]
-}
-```
+With no backends configured, the same alert yields 0.45 and every probe is listed as `unavailable: prometheus backend not configured (not counted)`. In the same live run, alerts for the other failure modes scored at most 0.55 and a Redis alert was reported as contradicted with diagnostics only. The committed [scenario evidence](docs/demo-evidence/README.md) shows all five scenarios, including the Nginx one, where the demo stack has no edge telemetry and the report stays at the alert-only bound.
 
 ### Trust And Decision Authority
 
 | Input or component | Trust boundary | Can affect RCA? | Can execute remediation? |
 | --- | --- | --- | --- |
-| Alert names, annotations, log text | Untrusted/operator-influenced | Yes, only through fixed predicates and bounded weights | No |
-| Service dependency graph | Operator-managed durable state | Root selection; observed root adds at most `0.03` | No |
-| Compiled Go rule table | Trusted correctness path, reviewed in CI | Defines rule IDs, weights, caps, ties, and typed candidates | No |
+| Alert names and labels | Untrusted/operator-influenced | Selects a rule only by exact alertname or `argus_failure_mode`; labels only fill validated targets | No |
+| Alert annotations, summaries | Untrusted | No | No |
+| Prometheus and Loki responses | External observability backends; unsafe label values never reach them | Only through fixed probes, thresholds, and weights | No |
+| Service dependency graph | Operator-managed durable state | Root selection; observed root adds at most `0.03`, under the source cap | No |
+| Compiled Go rule table | Trusted correctness path, reviewed in CI | Defines alert names, probes, weights, caps, and candidate templates | No |
 | LLM and Verdikt proposal path | External advisory/governance dependencies; malformed or unavailable responses fail closed | Cannot change evidence, score, target, or parameters | No |
 | Go policy, OIDC identity, approval, worker | Authoritative execution path | Does not rewrite RCA | Yes, through registered handlers only |
 
@@ -174,19 +147,7 @@ Representative stored RCA output:
 make rca-eval
 ```
 
-Current checked output:
-
-```text
-postgres   confidence=0.9500
-redis      confidence=0.7970
-nginx      confidence=0.7690
-dependency confidence=0.7406
-config     confidence=0.8795
-100/100 deterministic replays identical
-Validated deterministic RCA arithmetic for 5 scenarios.
-```
-
-The harness also verifies duplicate-evidence suppression, lexical score ties, unknown-signal fallback, observed/inferred topology bounds, and the rule that topology may identify a failure domain but cannot invent a component failure mode. CI runs it as the named `Evaluate deterministic RCA contract` step.
+Runs the matching and scoring contract tests (keyword traps, refutation, unavailable backends, label injection, tie-breaks, replay stability, topology bounds) and `scripts/check-rca-evidence.py`, which independently recomputes every committed demo score from its recorded `evidence_items`. `TestDemoEvidenceMatchesEngine` fails if a committed snapshot drifts from engine output. See the full [scoring specification](docs/rca-scoring.md).
 
 ## Quick Start
 
@@ -348,7 +309,7 @@ Argus keeps AI output outside the correctness path and separates authorization, 
 | Boundary | Demonstrated behavior | Explicit v1 gap |
 | --- | --- | --- |
 | Alert correlation | Exact dedupe keys, a bounded grouping window, deterministic topology walks, and retained downstream evidence | Missing fingerprints can collapse alerts with the same name; stale dependency edges can infer the wrong root; there is no topology freshness score |
-| RCA | Fixed rule IDs, evidence weights, confidence contributions, stable tie-breaking, and a reproducible evaluation harness | Text classification still trusts normalized alert/log content as evidence; it does not attest source provenance or calibrate scores from production outcomes |
+| RCA | Rules selected by exact alertname or explicit label; confidence from probes Argus actually ran against Prometheus/Loki, capped by independent sources; contradicted hypotheses propose diagnostics only | Weights and thresholds are uncalibrated heuristics; probes run at RCA time and can miss a recovered condition; no trace backend |
 | PostgreSQL | Durable incidents, approvals, receipts, audit chain, and transactional local handler state | Incident ingestion spans multiple transactions, so a database failure can leave partial context; no HA, PITR, or automated failover is shipped |
 | NATS JetStream | Durable manual-ack consumption and redelivery; handler receipts make local replay safe | There is no transactional outbox: an API crash after `approved -> queued` but before publish can strand a queued remediation; no automatic reconciler or dead-letter stream exists |
 | Worker execution | Registered handlers validate bounded input, support dry-run, and reuse durable receipts | Exactly-once safety is proven only for the PostgreSQL-backed local adapters; a real external provider must supply its own idempotency token for the post-side-effect/pre-receipt crash window |

@@ -1,52 +1,115 @@
 {
   "scenario": "dependency_latency",
   "incident": {
+    "dedupe_key": "payments-api:PaymentsAPIDependencyLatency:local:manual-dependency_latency",
     "service": "payments-api",
     "severity": "sev2",
-    "status": "awaiting_approval",
-    "dedupe_key": "payments-api:dependency_latency:local:manual-dependency_latency"
+    "status": "awaiting_approval"
   },
   "timeline": [
     {
-      "type": "correlated_evidence",
-      "summary": "downstream dependency latency dominates the request path",
-      "confidence": 0.84
+      "source": "alertmanager",
+      "summary": "PaymentsAPIDependencyLatency fired for payments-api",
+      "type": "alert_received"
     },
     {
-      "type": "correlated_evidence",
-      "summary": "p95 latency increased before failure rate dominated",
-      "confidence": 0.77
+      "source": "prometheus",
+      "summary": "service_p95_latency: p95 request latency is at or above 800ms (observed 2.2222, threshold \u003e= 0.8)",
+      "type": "probe_corroborated"
+    },
+    {
+      "source": "loki",
+      "summary": "dependency_latency_logs: logs attribute request latency to a downstream dependency (observed 368, threshold \u003e= 1)",
+      "type": "probe_corroborated"
     }
   ],
   "rca": {
-    "primary_hypothesis": "Downstream dependency latency dominates the request path",
-    "confidence": 0.7406,
-    "evidence": [
-      "downstream dependency latency dominates the request path",
-      "p95 latency increased before failure rate dominated"
-    ],
-    "score_breakdown": {
-      "baseline": 0.35,
-      "items": [
-        {
-          "rule_id": "dependency_latency",
-          "type": "trace_anomaly",
-          "confidence": 0.84,
-          "weight": 0.3,
-          "contribution": 0.252
+    "candidates": [
+      {
+        "action_type": "toggle_feature_flag",
+        "target": "payments-api/optional-notifications",
+        "parameters": {
+          "enabled": false
         },
-        {
-          "rule_id": "dependency_latency",
-          "type": "metric_anomaly",
-          "confidence": 0.77,
-          "weight": 0.18,
-          "contribution": 0.1386
-        }
+        "risk": "medium",
+        "requires_approval": true
+      }
+    ],
+    "confidence": 0.8,
+    "contributing_factors": [
+      "alert match via alertname PaymentsAPIDependencyLatency (+0.45)",
+      "prometheus probe service_p95_latency (symptom) corroborated: observed 2.2222 \u003e= 0.8 (+0.20)",
+      "loki probe dependency_latency_logs corroborated: observed 368 \u003e= 1 (+0.15)",
+      "independent sources: alertmanager, loki (cap 0.80)"
+    ],
+    "evidence": [
+      "alertmanager: alert PaymentsAPIDependencyLatency fired for payments-api",
+      "prometheus (symptom): p95 request latency is at or above 800ms (observed 2.2222 \u003e= 0.8)",
+      "loki: logs attribute request latency to a downstream dependency (observed 368 \u003e= 1)"
+    ],
+    "evidence_items": [
+      {
+        "rule_id": "dependency_latency",
+        "kind": "alert",
+        "source": "alertmanager",
+        "reference": "PaymentsAPIDependencyLatency",
+        "service": "payments-api",
+        "status": "matched",
+        "weight": 0.45,
+        "claim": "alert matched by alertname PaymentsAPIDependencyLatency",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "dependency_latency",
+        "kind": "probe",
+        "source": "prometheus",
+        "reference": "service_p95_latency",
+        "service": "payments-api",
+        "query": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"payments-api\"}[5m])))",
+        "status": "corroborated",
+        "value": 2.2222,
+        "comparator": "\u003e=",
+        "threshold": 0.8,
+        "weight": 0.2,
+        "claim": "p95 request latency is at or above 800ms",
+        "symptom": true,
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "dependency_latency",
+        "kind": "probe",
+        "source": "loki",
+        "reference": "dependency_latency_logs",
+        "service": "payments-api",
+        "query": "sum(count_over_time({service=\"payments-api\"} |= \"latency dominated\" [10m]))",
+        "status": "corroborated",
+        "value": 368,
+        "comparator": "\u003e=",
+        "threshold": 1,
+        "weight": 0.15,
+        "claim": "logs attribute request latency to a downstream dependency",
+        "observed_at": "2026-11-01T05:00:00Z"
+      }
+    ],
+    "primary_hypothesis": "Downstream dependency latency dominates the request path",
+    "score_breakdown": {
+      "rule_id": "dependency_latency",
+      "baseline": 0.35,
+      "alert_match": 0.45,
+      "corroborated": 0.35,
+      "refuted": 0,
+      "refutation_penalty": 0,
+      "raw": 0.8,
+      "sources": [
+        "alertmanager",
+        "loki"
       ],
-      "evidence_score": 0.3906,
-      "final_confidence": 0.7406,
-      "capped": false
-    }
+      "source_cap": 0.8,
+      "topology_adjustment": 0,
+      "contradicted": false,
+      "final": 0.8
+    },
+    "summary": "Downstream dependency latency dominates the request path likely impacted payments-api. Confidence 0.8000 = min(max(0.45 alert match + 0.35 corroborated - 0.00 refutation penalty, 0.35), 0.80 cap for 2 independent source(s): alertmanager, loki)."
   },
   "remediations": [
     {

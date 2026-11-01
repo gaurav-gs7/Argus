@@ -595,6 +595,11 @@ func TestSymptomProbesDoNotCountAsIndependentSources(t *testing.T) {
 		if !strings.Contains(strings.Join(got.Factors, "\n"), "(symptom) corroborated") {
 			t.Fatalf("%s: factors do not label the symptom: %v", name, got.Factors)
 		}
+		for _, line := range got.Evidence {
+			if strings.HasPrefix(line, "prometheus:") {
+				t.Fatalf("%s: symptom evidence not labelled: %q", name, line)
+			}
+		}
 		for _, item := range got.Items {
 			if item.Kind == "probe" && item.Status == "corroborated" && !item.Symptom {
 				t.Fatalf("%s: corroborated item not marked as symptom: %+v", name, item)

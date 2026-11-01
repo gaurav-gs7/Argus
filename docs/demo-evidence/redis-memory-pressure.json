@@ -1,52 +1,130 @@
 {
   "scenario": "redis_memory_pressure",
   "incident": {
+    "dedupe_key": "payments-api:PaymentsAPIRedisMemoryPressure:local:manual-redis_memory_pressure",
     "service": "payments-api",
     "severity": "sev2",
-    "status": "awaiting_approval",
-    "dedupe_key": "payments-api:redis_memory_pressure:local:manual-redis_memory_pressure"
+    "status": "awaiting_approval"
   },
   "timeline": [
     {
-      "type": "correlated_evidence",
-      "summary": "redis memory pressure signal crossed threshold",
-      "confidence": 0.86
+      "source": "alertmanager",
+      "summary": "PaymentsAPIRedisMemoryPressure fired for payments-api",
+      "type": "alert_received"
     },
     {
-      "type": "correlated_evidence",
-      "summary": "cache errors increased during the incident window",
-      "confidence": 0.82
+      "source": "prometheus",
+      "summary": "redis_operation_errors: redis operation errors increased in the last 10 minutes (observed 929.2159, threshold \u003e= 1)",
+      "type": "probe_corroborated"
+    },
+    {
+      "source": "loki",
+      "summary": "redis_memory_pressure_logs: logs report redis memory pressure (observed 920, threshold \u003e= 1)",
+      "type": "probe_corroborated"
     }
   ],
   "rca": {
-    "primary_hypothesis": "Redis memory pressure causing cache degradation",
-    "confidence": 0.797,
-    "evidence": [
-      "redis memory pressure signal crossed threshold",
-      "cache errors increased during the incident window"
-    ],
-    "score_breakdown": {
-      "baseline": 0.35,
-      "items": [
-        {
-          "rule_id": "redis_memory_pressure",
-          "type": "metric_anomaly",
-          "confidence": 0.86,
-          "weight": 0.31,
-          "contribution": 0.2666
+    "candidates": [
+      {
+        "action_type": "purge_cache",
+        "target": "demo:pressure:*",
+        "parameters": {
+          "max_keys": 500
         },
-        {
-          "rule_id": "redis_memory_pressure",
-          "type": "service_impact",
-          "confidence": 0.82,
-          "weight": 0.22,
-          "contribution": 0.1804
-        }
+        "risk": "medium",
+        "requires_approval": true
+      }
+    ],
+    "confidence": 0.75,
+    "contributing_factors": [
+      "alert match via alertname PaymentsAPIRedisMemoryPressure (+0.45)",
+      "prometheus probe redis_memory_utilisation returned no matching series (not counted)",
+      "prometheus probe redis_operation_errors corroborated: observed 929.2159 \u003e= 1 (+0.15)",
+      "loki probe redis_memory_pressure_logs corroborated: observed 920 \u003e= 1 (+0.15)",
+      "independent sources: alertmanager, loki, prometheus (cap 0.95)"
+    ],
+    "evidence": [
+      "alertmanager: alert PaymentsAPIRedisMemoryPressure fired for payments-api",
+      "prometheus: redis operation errors increased in the last 10 minutes (observed 929.2159 \u003e= 1)",
+      "loki: logs report redis memory pressure (observed 920 \u003e= 1)"
+    ],
+    "evidence_items": [
+      {
+        "rule_id": "redis_memory_pressure",
+        "kind": "alert",
+        "source": "alertmanager",
+        "reference": "PaymentsAPIRedisMemoryPressure",
+        "service": "payments-api",
+        "status": "matched",
+        "weight": 0.45,
+        "claim": "alert matched by alertname PaymentsAPIRedisMemoryPressure",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "redis_memory_pressure",
+        "kind": "probe",
+        "source": "prometheus",
+        "reference": "redis_memory_utilisation",
+        "service": "payments-api",
+        "query": "max(redis_memory_used_bytes{service=\"payments-api\"} / redis_memory_max_bytes{service=\"payments-api\"})",
+        "status": "no_data",
+        "comparator": "\u003e=",
+        "threshold": 0.9,
+        "weight": 0.2,
+        "claim": "redis memory usage is at or above 90% of maxmemory",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "redis_memory_pressure",
+        "kind": "probe",
+        "source": "prometheus",
+        "reference": "redis_operation_errors",
+        "service": "payments-api",
+        "query": "sum(increase(redis_operation_errors_total{service=\"payments-api\"}[10m]))",
+        "status": "corroborated",
+        "value": 929.2159,
+        "comparator": "\u003e=",
+        "threshold": 1,
+        "weight": 0.15,
+        "claim": "redis operation errors increased in the last 10 minutes",
+        "observed_at": "2026-11-01T05:00:00Z"
+      },
+      {
+        "rule_id": "redis_memory_pressure",
+        "kind": "probe",
+        "source": "loki",
+        "reference": "redis_memory_pressure_logs",
+        "service": "payments-api",
+        "query": "sum(count_over_time({service=\"payments-api\"} |= \"redis memory pressure\" [10m]))",
+        "status": "corroborated",
+        "value": 920,
+        "comparator": "\u003e=",
+        "threshold": 1,
+        "weight": 0.15,
+        "claim": "logs report redis memory pressure",
+        "observed_at": "2026-11-01T05:00:00Z"
+      }
+    ],
+    "primary_hypothesis": "Redis memory pressure causing cache degradation",
+    "score_breakdown": {
+      "rule_id": "redis_memory_pressure",
+      "baseline": 0.35,
+      "alert_match": 0.45,
+      "corroborated": 0.3,
+      "refuted": 0,
+      "refutation_penalty": 0,
+      "raw": 0.75,
+      "sources": [
+        "alertmanager",
+        "loki",
+        "prometheus"
       ],
-      "evidence_score": 0.447,
-      "final_confidence": 0.797,
-      "capped": false
-    }
+      "source_cap": 0.95,
+      "topology_adjustment": 0,
+      "contradicted": false,
+      "final": 0.75
+    },
+    "summary": "Redis memory pressure causing cache degradation likely impacted payments-api. Confidence 0.7500 = min(max(0.45 alert match + 0.30 corroborated - 0.00 refutation penalty, 0.35), 0.95 cap for 3 independent source(s): alertmanager, loki, prometheus)."
   },
   "remediations": [
     {
