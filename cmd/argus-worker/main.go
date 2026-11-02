@@ -43,6 +43,11 @@ func main() {
 	metrics := telemetry.MustRegister()
 	controlState := workers.NewPostgresControlStateStore(database)
 	runner := workers.NewRunner(store, auditor, queueClient, metrics, workers.DefaultHandlers(controlState)...)
+	runner.Configure(workers.RunnerConfig{
+		Concurrency: cfg.WorkerConcurrency,
+		JobTimeout:  cfg.WorkerJobTimeout,
+		MaxDeliver:  cfg.WorkerMaxDeliver,
+	})
 
 	logger.Info("starting argus-worker", "worker_id", cfg.WorkerID)
 	if err := runner.Start(ctx, cfg.WorkerID); err != nil && err != context.Canceled {

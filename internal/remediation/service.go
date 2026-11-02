@@ -259,7 +259,8 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	start := time.Now()
 	// Reserve execution before dispatch so concurrent callers and fast workers
 	// cannot race the persisted mode or enqueue the same action twice.
-	if err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun); err != nil {
+	queuedAt, err := s.store.MarkRemediationQueued(ctx, remediation.ID, dryRun)
+	if err != nil {
 		latest, getErr := s.store.GetRemediation(ctx, remediation.ID)
 		if getErr == nil && (latest.Status == StateQueued || latest.Status == StateRunning || latest.Status == StateSucceeded) {
 			_ = s.auditor.Write(ctx, audit.Entry{
@@ -270,6 +271,8 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 		}
 		return false, err
 	}
+	remediation.QueuedAt = &queuedAt
+	remediation.DryRun = dryRun
 	outcome, err := s.exec.Execute(ctx, remediation, incident, dryRun)
 	if err != nil {
 		_ = s.store.ReleaseRemediationQueueReservation(ctx, remediation.ID)

@@ -270,7 +270,7 @@ func TestWorkerReplicasShareWorkExactlyOnce(t *testing.T) {
 	for range jobs {
 		rem := env.queuedRemediation(t, ctx, "test_counter")
 		ids = append(ids, rem.ID)
-		if err := publisher.Publish(ctx, "remediation.execute", queue.Event{EventType: "remediation.execute", Payload: map[string]any{"remediation_id": rem.ID}}); err != nil {
+		if _, err := publisher.Publish(ctx, "remediation.execute", queue.Event{EventType: "remediation.execute", Payload: map[string]any{"remediation_id": rem.ID}}); err != nil {
 			t.Fatal(err)
 		}
 	}

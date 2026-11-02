@@ -2,11 +2,13 @@ package workers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/actions"
@@ -25,12 +27,33 @@ type Handler interface {
 	DryRun(ctx context.Context, req incidents.RemediationAction) (map[string]any, error)
 }
 
+// RunnerConfig bounds how a worker consumes remediation jobs.
+type RunnerConfig struct {
+	// Concurrency is how many jobs one worker runs at once, so one slow
+	// handler cannot stall the queue.
+	Concurrency int
+	// JobTimeout bounds a single handler execution. A job that exceeds it is
+	// marked timed_out and not retried, because its side effect is unknown.
+	JobTimeout time.Duration
+	// MaxDeliver caps deliveries of one message, including retries after
+	// transient database errors. The last attempt is dead-lettered.
+	MaxDeliver int
+	// FetchWait is how long one pull request waits for work.
+	FetchWait time.Duration
+}
+
+func DefaultRunnerConfig() RunnerConfig {
+	return RunnerConfig{Concurrency: 4, JobTimeout: 2 * time.Minute, MaxDeliver: 5, FetchWait: 2 * time.Second}
+}
+
 type Runner struct {
 	store    *incidents.Store
 	auditor  *audit.Service
 	queue    *queue.Client
 	metrics  *telemetry.Metrics
 	handlers map[string]Handler
+	cfg      RunnerConfig
+	inflight sync.WaitGroup
 }
 
 func NewRunner(store *incidents.Store, auditor *audit.Service, queueClient *queue.Client, metrics *telemetry.Metrics, handlers ...Handler) *Runner {
@@ -44,54 +67,200 @@ func NewRunner(store *incidents.Store, auditor *audit.Service, queueClient *queu
 		queue:    queueClient,
 		metrics:  metrics,
 		handlers: registry,
+		cfg:      DefaultRunnerConfig(),
 	}
 }
 
+// Configure overrides the defaults; zero fields keep their default.
+func (r *Runner) Configure(cfg RunnerConfig) {
+	def := DefaultRunnerConfig()
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = def.Concurrency
+	}
+	if cfg.JobTimeout <= 0 {
+		cfg.JobTimeout = def.JobTimeout
+	}
+	if cfg.MaxDeliver <= 0 {
+		cfg.MaxDeliver = def.MaxDeliver
+	}
+	if cfg.FetchWait <= 0 {
+		cfg.FetchWait = def.FetchWait
+	}
+	r.cfg = cfg
+}
+
 const (
-	remediationStream    = "ARGUS_REMEDIATION"
-	workerQueueGroup     = "argus-workers"
-	legacyWorkerConsumer = "argus-worker"
+	// WorkerConsumer is the durable pull consumer every worker replica shares.
+	WorkerConsumer = "argus-remediation-workers"
 )
+
+// legacyConsumers are push consumers from earlier versions. A push consumer
+// cannot become a pull consumer, so they are removed at startup.
+var legacyConsumers = []string{"argus-worker", "argus-workers"}
+
+// ConsumerConfig is the durable pull consumer for remediation jobs. AckWait
+// exceeds the job timeout so JetStream does not redeliver a job that is still
+// running.
+func (r *Runner) ConsumerConfig() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:       WorkerConsumer,
+		FilterSubject: queue.RemediationSubject,
+		AckPolicy:     nats.AckExplicitPolicy,
+		AckWait:       r.cfg.JobTimeout + 30*time.Second,
+		MaxDeliver:    r.cfg.MaxDeliver,
+		MaxAckPending: 256,
+		DeliverPolicy: nats.DeliverAllPolicy,
+	}
+}
+
+func (r *Runner) ensureConsumer(js nats.JetStreamContext) error {
+	for _, name := range legacyConsumers {
+		if err := js.DeleteConsumer(queue.RemediationStream, name); err != nil && !errors.Is(err, nats.ErrConsumerNotFound) {
+			return fmt.Errorf("remove legacy consumer %s: %w", name, err)
+		}
+	}
+	want := r.ConsumerConfig()
+	if _, err := js.ConsumerInfo(queue.RemediationStream, WorkerConsumer); err != nil {
+		if !errors.Is(err, nats.ErrConsumerNotFound) {
+			return fmt.Errorf("inspect worker consumer: %w", err)
+		}
+		if _, err := js.AddConsumer(queue.RemediationStream, &want); err != nil && !errors.Is(err, nats.ErrConsumerNameAlreadyInUse) {
+			return fmt.Errorf("create worker consumer: %w", err)
+		}
+		return nil
+	}
+	if _, err := js.UpdateConsumer(queue.RemediationStream, &want); err != nil {
+		return fmt.Errorf("update worker consumer: %w", err)
+	}
+	return nil
+}
 
 func (r *Runner) Start(ctx context.Context, workerID string) error {
 	if err := r.queue.EnsureStreams(); err != nil {
 		return err
 	}
-
 	js := r.queue.JetStream()
-	// The original single-subscriber consumer cannot be shared. Remove it so
-	// it stops accumulating pending messages; the queue-group consumer below
-	// starts from the stream head and the status gate in handleMessage skips
-	// anything already handled.
-	if err := js.DeleteConsumer(remediationStream, legacyWorkerConsumer); err != nil && !errors.Is(err, nats.ErrConsumerNotFound) {
-		return fmt.Errorf("remove legacy worker consumer: %w", err)
+	if err := r.ensureConsumer(js); err != nil {
+		return err
 	}
-	// Every worker joins the same deliver group, so replicas share the work
-	// and each message goes to one of them.
-	_, err := js.QueueSubscribe("remediation.execute", workerQueueGroup, func(msg *nats.Msg) {
-		_ = r.handleMessage(ctx, msg)
-	}, nats.Durable(workerQueueGroup), nats.ManualAck(), nats.AckExplicit())
+	sub, err := js.PullSubscribe(queue.RemediationSubject, WorkerConsumer, nats.Bind(queue.RemediationStream, WorkerConsumer))
 	if err != nil {
 		return fmt.Errorf("subscribe remediation.execute: %w", err)
 	}
+	defer func() { _ = sub.Unsubscribe() }()
 
 	go r.heartbeat(ctx, workerID)
-	<-ctx.Done()
+
+	// Jobs keep their own context so a shutdown does not abort a handler
+	// half way; Start waits for them (bounded by the job timeout) to finish.
+	jobCtx := context.WithoutCancel(ctx)
+	slots := make(chan struct{}, r.cfg.Concurrency)
+	for ctx.Err() == nil {
+		free := cap(slots) - len(slots)
+		if free == 0 {
+			select {
+			case slots <- struct{}{}:
+				<-slots
+			case <-ctx.Done():
+			}
+			continue
+		}
+		msgs, err := sub.Fetch(free, nats.MaxWait(r.cfg.FetchWait))
+		if err != nil {
+			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
+			if ctx.Err() != nil {
+				break
+			}
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+			}
+			continue
+		}
+		for _, msg := range msgs {
+			slots <- struct{}{}
+			r.inflight.Add(1)
+			go func() {
+				defer r.inflight.Done()
+				defer func() { <-slots }()
+				_ = r.handleMessage(jobCtx, msg)
+			}()
+		}
+	}
+
+	done := make(chan struct{})
+	go func() { r.inflight.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(r.cfg.JobTimeout + 5*time.Second):
+	}
 	return ctx.Err()
+}
+
+// deliveries is how many times JetStream has delivered this message.
+func deliveries(msg *nats.Msg) uint64 {
+	if meta, err := msg.Metadata(); err == nil {
+		return meta.NumDelivered
+	}
+	return 1
+}
+
+// RetryDelay is the backoff before redelivering after a transient failure.
+func RetryDelay(delivery uint64) time.Duration {
+	const ceiling = 60 * time.Second
+	if delivery < 1 {
+		delivery = 1
+	}
+	if delivery > 7 {
+		return ceiling
+	}
+	return min(time.Duration(1<<(delivery-1))*time.Second, ceiling)
+}
+
+// deadLetter republishes a message to the dead-letter stream and terminates
+// it so JetStream stops redelivering.
+func (r *Runner) deadLetter(ctx context.Context, msg *nats.Msg, reason string) {
+	if r.metrics != nil {
+		r.metrics.RemediationDeadLettersTotal.WithLabelValues(reason).Inc()
+	}
+	if r.queue != nil {
+		_ = r.queue.DeadLetter(ctx, msg, reason)
+	}
+	_ = msg.Term()
+}
+
+// retryLater handles a transient failure (typically PostgreSQL being
+// unavailable): back off and redeliver, or dead-letter on the last attempt.
+func (r *Runner) retryLater(ctx context.Context, msg *nats.Msg, cause error) error {
+	n := deliveries(msg)
+	if n >= uint64(r.cfg.MaxDeliver) {
+		r.deadLetter(ctx, msg, "retries_exhausted")
+		return fmt.Errorf("dead-lettered after %d deliveries: %w", n, cause)
+	}
+	_ = msg.NakWithDelay(RetryDelay(n))
+	return cause
 }
 
 func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 	var event queue.Event
 	if err := json.Unmarshal(msg.Data, &event); err != nil {
-		_ = msg.Term()
+		r.deadLetter(ctx, msg, "undecodable_payload")
 		return err
 	}
-
 	remediationID, _ := event.Payload["remediation_id"].(string)
+	if remediationID == "" {
+		r.deadLetter(ctx, msg, "missing_remediation_id")
+		return fmt.Errorf("job has no remediation_id")
+	}
 	remediation, err := r.store.GetRemediation(ctx, remediationID)
-	if err != nil {
-		_ = msg.Nak()
+	if errors.Is(err, sql.ErrNoRows) {
+		r.deadLetter(ctx, msg, "remediation_not_found")
 		return err
+	}
+	if err != nil {
+		return r.retryLater(ctx, msg, err)
 	}
 
 	if remediation.Status != remediationpkg.StateQueued && remediation.Status != remediationpkg.StateRunning {
@@ -121,8 +290,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 	start := time.Now()
 	claimed, err := r.store.ClaimRemediation(ctx, remediation.ID)
 	if err != nil {
-		_ = msg.Nak()
-		return err
+		return r.retryLater(ctx, msg, err)
 	}
 	if !claimed {
 		// It left queued between the read above and this claim (for example
@@ -136,19 +304,22 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		return msg.Ack()
 	}
 
-	var result map[string]any
-	if remediation.DryRun {
-		result, err = handler.DryRun(ctx, remediation)
-	} else {
-		result, err = handler.Execute(ctx, remediation)
+	result, err, timedOut := r.runHandler(ctx, handler, remediation)
+	if timedOut {
+		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
+		reason := fmt.Sprintf("handler exceeded the %s job timeout; outcome unknown, not retried", r.cfg.JobTimeout)
+		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateTimedOut, nil, reason)
+		_ = r.auditor.Write(ctx, audit.Entry{
+			ActorType: "system", Action: "remediation.timed_out", ResourceType: "remediation", ResourceID: remediation.ID,
+			AfterState: map[string]any{"status": remediationpkg.StateTimedOut, "error": reason},
+		})
+		_ = msg.Ack()
+		return fmt.Errorf("%s", reason)
 	}
 	if err != nil {
-		deliveryAttempt := uint64(1)
-		if metadata, metaErr := msg.Metadata(); metaErr == nil {
-			deliveryAttempt = metadata.NumDelivered
-		}
-		if deliveryAttempt < uint64(remediation.MaxAttempts) {
-			backoff := time.Duration(deliveryAttempt) * 2 * time.Second
+		deliveryAttempt := deliveries(msg)
+		if deliveryAttempt < uint64(remediation.MaxAttempts) && deliveryAttempt < uint64(r.cfg.MaxDeliver) {
+			backoff := RetryDelay(deliveryAttempt)
 			_ = r.auditor.Write(ctx, audit.Entry{
 				ActorType:    "system",
 				Action:       "remediation.retry_scheduled",
@@ -184,8 +355,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 
 	completed, err := r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateSucceeded, result, "")
 	if err != nil {
-		_ = msg.Nak()
-		return err
+		return r.retryLater(ctx, msg, err)
 	}
 	if !completed {
 		_ = r.auditor.Write(ctx, audit.Entry{
@@ -208,6 +378,38 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		},
 	})
 	return msg.Ack()
+}
+
+// runHandler executes one job under the job timeout. The handler receives a
+// context that is cancelled at the deadline; if it does not return by then
+// the job is reported as timed out and the handler is left to finish on its
+// own (its late completion then fails the status compare-and-swap).
+func (r *Runner) runHandler(ctx context.Context, handler Handler, remediation incidents.RemediationAction) (map[string]any, error, bool) {
+	jobCtx, cancel := context.WithTimeout(ctx, r.cfg.JobTimeout)
+	defer cancel()
+	type outcome struct {
+		result map[string]any
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		var o outcome
+		if remediation.DryRun {
+			o.result, o.err = handler.DryRun(jobCtx, remediation)
+		} else {
+			o.result, o.err = handler.Execute(jobCtx, remediation)
+		}
+		done <- o
+	}()
+	select {
+	case o := <-done:
+		if o.err != nil && errors.Is(o.err, context.DeadlineExceeded) && jobCtx.Err() != nil {
+			return nil, o.err, true
+		}
+		return o.result, o.err, false
+	case <-jobCtx.Done():
+		return nil, jobCtx.Err(), true
+	}
 }
 
 func (r *Runner) auditSkip(ctx context.Context, remediationID, status string) {

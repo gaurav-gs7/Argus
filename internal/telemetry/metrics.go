@@ -14,6 +14,7 @@ type Metrics struct {
 	LLMRequestsTotal                  *prometheus.CounterVec
 	LLMRequestDuration                *prometheus.HistogramVec
 	WorkerHeartbeatAgeSeconds         *prometheus.GaugeVec
+	RemediationDeadLettersTotal       *prometheus.CounterVec
 	RCAConfidence                     *prometheus.HistogramVec
 	ApprovalRequestsTotal             *prometheus.CounterVec
 	ApprovalsPending                  prometheus.Gauge
@@ -76,6 +77,10 @@ func MustRegister() *Metrics {
 			Help:    "LLM request duration",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"backend"}),
+		RemediationDeadLettersTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_remediation_dead_letters_total",
+			Help: "Remediation jobs moved to the dead-letter stream, by reason",
+		}, []string{"reason"}),
 		WorkerHeartbeatAgeSeconds: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "argus_worker_heartbeat_age_seconds",
 			Help: "Age of latest worker heartbeat",
@@ -158,6 +163,7 @@ func MustRegister() *Metrics {
 		m.LLMRequestsTotal,
 		m.LLMRequestDuration,
 		m.WorkerHeartbeatAgeSeconds,
+		m.RemediationDeadLettersTotal,
 		m.RCAConfidence,
 		m.ApprovalRequestsTotal,
 		m.ApprovalsPending,

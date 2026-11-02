@@ -886,23 +886,23 @@ func (s *Store) CancelRemediation(ctx context.Context, remediationID, expectedSt
 	return affectedOne(result)
 }
 
-func (s *Store) MarkRemediationQueued(ctx context.Context, remediationID string, dryRun bool) error {
-	result, err := s.q.ExecContext(ctx, `
+// MarkRemediationQueued reserves an approved remediation for dispatch and
+// returns the reservation time, which identifies this reservation.
+func (s *Store) MarkRemediationQueued(ctx context.Context, remediationID string, dryRun bool) (time.Time, error) {
+	var queuedAt time.Time
+	err := s.q.QueryRowContext(ctx, `
 		UPDATE remediation_actions
 		SET status = 'queued', queued_at = now(), dry_run = $2
 		WHERE id = $1 AND status = 'approved'
-	`, remediationID, dryRun)
+		RETURNING queued_at
+	`, remediationID, dryRun).Scan(&queuedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, fmt.Errorf("remediation queue reservation is no longer available")
+	}
 	if err != nil {
-		return fmt.Errorf("mark remediation queued: %w", err)
+		return time.Time{}, fmt.Errorf("mark remediation queued: %w", err)
 	}
-	updated, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read remediation queue reservation result: %w", err)
-	}
-	if updated != 1 {
-		return fmt.Errorf("remediation queue reservation is no longer available")
-	}
-	return nil
+	return queuedAt, nil
 }
 
 func (s *Store) ReleaseRemediationQueueReservation(ctx context.Context, remediationID string) error {

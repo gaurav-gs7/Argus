@@ -37,8 +37,8 @@ func (e *LocalExecutor) Name() string {
 }
 
 func (e *LocalExecutor) Execute(ctx context.Context, remediation incidents.RemediationAction, incident incidents.Incident, dryRun bool) (ExecutionOutcome, error) {
-	if err := e.queue.Publish(ctx, "remediation.execute", queue.Event{
-		EventID:        common.NewID("evt"),
+	if _, err := e.queue.Publish(ctx, queue.RemediationSubject, queue.Event{
+		EventID:        reservationEventID(remediation),
 		EventType:      "remediation.execute",
 		OccurredAt:     time.Now().UTC(),
 		Producer:       "argus-api",
@@ -62,6 +62,16 @@ func (e *LocalExecutor) Execute(ctx context.Context, remediation incidents.Remed
 			"dry_run":         dryRun,
 		},
 	}, nil
+}
+
+// reservationEventID identifies one queue reservation of a remediation. It is
+// the JetStream Nats-Msg-Id, so a publish retried after a lost ack is stored
+// once, while a later re-queue (a new reservation) is a new message.
+func reservationEventID(remediation incidents.RemediationAction) string {
+	if remediation.QueuedAt == nil {
+		return common.NewID("evt")
+	}
+	return fmt.Sprintf("%s@%d", remediation.IdempotencyKey, remediation.QueuedAt.UnixNano())
 }
 
 type HeliosExecutor struct {

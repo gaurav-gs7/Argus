@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,6 +39,9 @@ type Config struct {
 	HeliosAdminToken           string
 	HeliosPollTimeout          time.Duration
 	WorkerID                   string
+	WorkerConcurrency          int
+	WorkerJobTimeout           time.Duration
+	WorkerMaxDeliver           int
 	WorkerHeartbeatEvery       time.Duration
 	ApprovalWebhookURL         string
 	ApprovalWebhookMode        string
@@ -86,6 +90,9 @@ func Load() Config {
 		HeliosAdminToken:           getenv("ARGUS_HELIOS_ADMIN_TOKEN", ""),
 		HeliosPollTimeout:          getduration("ARGUS_HELIOS_POLL_TIMEOUT", 8*time.Second),
 		WorkerID:                   getenv("ARGUS_WORKER_ID", "argus-worker-1"),
+		WorkerConcurrency:          getint("ARGUS_WORKER_CONCURRENCY", 4),
+		WorkerJobTimeout:           getduration("ARGUS_WORKER_JOB_TIMEOUT", 2*time.Minute),
+		WorkerMaxDeliver:           getint("ARGUS_WORKER_MAX_DELIVER", 5),
 		WorkerHeartbeatEvery:       getduration("ARGUS_WORKER_HEARTBEAT_EVERY", 10*time.Second),
 		ApprovalWebhookURL:         getenv("ARGUS_APPROVAL_WEBHOOK_URL", ""),
 		ApprovalWebhookMode:        strings.ToLower(getenv("ARGUS_APPROVAL_WEBHOOK_MODE", "generic")),
@@ -117,6 +124,18 @@ func getcsv(key string, fallback []string) []string {
 		return fallback
 	}
 	return values
+}
+
+func getint(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func getbool(key string, fallback bool) bool {
