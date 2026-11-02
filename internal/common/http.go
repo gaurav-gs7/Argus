@@ -2,8 +2,21 @@ package common
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 )
+
+// WriteDecodeError reports a request body that could not be read: 413 when it
+// exceeded the size limit, 400 otherwise.
+func WriteDecodeError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds %d bytes", tooLarge.Limit))
+		return
+	}
+	WriteError(w, http.StatusBadRequest, err.Error())
+}
 
 func ReadJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()

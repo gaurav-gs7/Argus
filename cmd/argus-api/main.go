@@ -26,12 +26,12 @@ func main() {
 	}
 	defer server.Close()
 
-	httpServer := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           server.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		MaxHeaderBytes:    32 << 10,
-	}
+	httpServer := api.NewHTTPServer(cfg.HTTPAddr, server.Handler(), api.HTTPTimeouts{
+		ReadHeader: cfg.HTTPReadHeaderTimeout,
+		Read:       cfg.HTTPReadTimeout,
+		Write:      cfg.HTTPWriteTimeout,
+		Idle:       cfg.HTTPIdleTimeout,
+	})
 
 	go func() {
 		logger.Info("starting argus-api", "addr", cfg.HTTPAddr)

@@ -10,6 +10,10 @@ import (
 type Config struct {
 	Env                        string
 	HTTPAddr                   string
+	HTTPReadHeaderTimeout      time.Duration
+	HTTPReadTimeout            time.Duration
+	HTTPWriteTimeout           time.Duration
+	HTTPIdleTimeout            time.Duration
 	PostgresDSN                string
 	RedisAddr                  string
 	NATSURL                    string
@@ -61,6 +65,10 @@ func Load() Config {
 	return Config{
 		Env:                        getenv("ARGUS_ENV", "local"),
 		HTTPAddr:                   getenv("ARGUS_HTTP_ADDR", ":8080"),
+		HTTPReadHeaderTimeout:      getduration("ARGUS_HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+		HTTPReadTimeout:            getduration("ARGUS_HTTP_READ_TIMEOUT", 15*time.Second),
+		HTTPWriteTimeout:           getduration("ARGUS_HTTP_WRITE_TIMEOUT", 30*time.Second),
+		HTTPIdleTimeout:            getduration("ARGUS_HTTP_IDLE_TIMEOUT", 120*time.Second),
 		PostgresDSN:                getenv("ARGUS_POSTGRES_DSN", "postgres://argus:argus@localhost:5432/argus?sslmode=disable"),
 		RedisAddr:                  getenv("ARGUS_REDIS_ADDR", "localhost:6379"),
 		NATSURL:                    getenv("ARGUS_NATS_URL", "nats://localhost:4222"),

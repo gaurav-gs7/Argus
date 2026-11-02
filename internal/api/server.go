@@ -202,7 +202,56 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/runbooks", s.handleRunbooks)
 	mux.HandleFunc("/v1/runbooks/reindex", s.handleRunbookReindex)
 
-	return s.loggingMiddleware(s.authMiddleware(mux))
+	return limitRequestBodies(s.loggingMiddleware(s.authMiddleware(mux)))
+}
+
+// Request body limits. Every route is capped so a client cannot stream an
+// unbounded body into a handler; Alertmanager groups can be large.
+const (
+	defaultMaxBodyBytes = 1 << 20
+)
+
+func maxBodyBytes(r *http.Request) int64 {
+	if r.URL.Path == "/v1/alerts/alertmanager" {
+		return maxAlertmanagerPayloadBytes
+	}
+	return defaultMaxBodyBytes
+}
+
+func limitRequestBodies(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := maxBodyBytes(r)
+		if r.ContentLength > limit {
+			common.WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds %d bytes", limit))
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// HTTPTimeouts bound how long a client may hold a connection.
+type HTTPTimeouts struct {
+	ReadHeader time.Duration
+	Read       time.Duration
+	Write      time.Duration
+	Idle       time.Duration
+}
+
+// NewHTTPServer wraps the API handler with connection timeouts. Without
+// them a slow or stalled client holds a goroutine and connection forever.
+func NewHTTPServer(addr string, handler http.Handler, timeouts HTTPTimeouts) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: timeouts.ReadHeader,
+		ReadTimeout:       timeouts.Read,
+		WriteTimeout:      timeouts.Write,
+		IdleTimeout:       timeouts.Idle,
+		MaxHeaderBytes:    32 << 10,
+	}
 }
 
 func (s *Server) handleCurrentPrincipal(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +291,7 @@ func (s *Server) handleAlertmanager(w http.ResponseWriter, r *http.Request) {
 
 	var payload incidents.AlertmanagerWebhook
 	if err := common.ReadExternalJSON(w, r, &payload, maxAlertmanagerPayloadBytes); err != nil {
-		common.WriteError(w, http.StatusBadRequest, err.Error())
+		common.WriteDecodeError(w, err)
 		return
 	}
 	if payload.TruncatedAlerts > 0 {
@@ -276,7 +325,7 @@ func (s *Server) handleIncidents(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req incidents.ManualIncidentRequest
 		if err := common.ReadJSON(r, &req); err != nil {
-			common.WriteError(w, http.StatusBadRequest, err.Error())
+			common.WriteDecodeError(w, err)
 			return
 		}
 		incident, err := s.incidentManager.CreateManual(r.Context(), req, actorFromRequest(r))
@@ -303,7 +352,7 @@ func (s *Server) handleManualSignal(w http.ResponseWriter, r *http.Request) {
 		Severity string `json:"severity"`
 	}
 	if err := common.ReadJSON(r, &body); err != nil {
-		common.WriteError(w, http.StatusBadRequest, err.Error())
+		common.WriteDecodeError(w, err)
 		return
 	}
 	if body.Service == "" {
@@ -521,7 +570,7 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			Reason string `json:"reason"`
 		}
 		if err := common.ReadJSON(r, &body); err != nil {
-			common.WriteError(w, http.StatusBadRequest, err.Error())
+			common.WriteDecodeError(w, err)
 			return
 		}
 		if err := s.remediationService.Approve(r.Context(), remediationID, actorFromRequest(r), body.Reason); err != nil {
@@ -538,7 +587,7 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			Reason string `json:"reason"`
 		}
 		if err := common.ReadJSON(r, &body); err != nil {
-			common.WriteError(w, http.StatusBadRequest, err.Error())
+			common.WriteDecodeError(w, err)
 			return
 		}
 		if err := s.remediationService.Reject(r.Context(), remediationID, actorFromRequest(r), body.Reason); err != nil {
@@ -555,7 +604,7 @@ func (s *Server) handleRemediationRoutes(w http.ResponseWriter, r *http.Request)
 			DryRun bool `json:"dry_run"`
 		}
 		if err := common.ReadJSON(r, &body); err != nil && err.Error() != "EOF" {
-			common.WriteError(w, http.StatusBadRequest, err.Error())
+			common.WriteDecodeError(w, err)
 			return
 		}
 		reused, err := s.remediationService.Execute(r.Context(), remediationID, body.DryRun, actorFromRequest(r))
@@ -624,7 +673,7 @@ func (s *Server) handleApprovalRequests(w http.ResponseWriter, r *http.Request) 
 
 	var body approvals.Decision
 	if err := common.ReadJSON(r, &body); err != nil {
-		common.WriteError(w, http.StatusBadRequest, err.Error())
+		common.WriteDecodeError(w, err)
 		return
 	}
 	request, err := s.approvalService.Decide(
@@ -643,9 +692,9 @@ func (s *Server) handleSlackApprovalCallback(w http.ResponseWriter, r *http.Requ
 		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		common.WriteError(w, http.StatusBadRequest, "unable to read Slack callback")
+		common.WriteDecodeError(w, err)
 		return
 	}
 	result, err := s.slackApproval.Handle(r.Context(), r.Header, body)
@@ -704,7 +753,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 			Name string `json:"name"`
 		}
 		if err := common.ReadJSON(r, &body); err != nil {
-			common.WriteError(w, http.StatusBadRequest, err.Error())
+			common.WriteDecodeError(w, err)
 			return
 		}
 		item, err := s.store.EnsureService(r.Context(), body.Name)
@@ -738,7 +787,7 @@ func (s *Server) handleTopologyDependencies(w http.ResponseWriter, r *http.Reque
 	}
 	var body incidents.ServiceDependencyRequest
 	if err := common.ReadJSON(r, &body); err != nil {
-		common.WriteError(w, http.StatusBadRequest, err.Error())
+		common.WriteDecodeError(w, err)
 		return
 	}
 	if strings.TrimSpace(body.Service) == "" || strings.TrimSpace(body.DependsOn) == "" {
