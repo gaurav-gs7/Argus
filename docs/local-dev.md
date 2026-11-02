@@ -21,7 +21,7 @@ make seed
 ## Useful Endpoints
 
 - API: `http://localhost:8080`
-- AI service: `http://localhost:8090`
+- AI service: `http://localhost:8090` (every route except `/healthz` and `/metrics` needs `Authorization: Bearer $ARGUS_AI_SERVICE_TOKEN`; Compose uses `argus-ai-local`)
 - Verdikt governance: `http://localhost:8081`
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`

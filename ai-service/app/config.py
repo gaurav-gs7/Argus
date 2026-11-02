@@ -16,9 +16,11 @@ class Settings(BaseModel):
     incidents_path: str = os.getenv(
         "ARGUS_PAST_INCIDENTS_PATH", "/data/incidents/sample-past-incidents.json"
     )
-    ai_service_token: str = os.getenv("ARGUS_AI_SERVICE_TOKEN", "argus-ai-local")
+    # Credentials have no defaults: a well-known fallback token is the same as
+    # no authentication. The service refuses to start without its own token.
+    ai_service_token: str = os.getenv("ARGUS_AI_SERVICE_TOKEN", "")
     verdikt_url: str = os.getenv("ARGUS_VERDIKT_URL", "http://verdikt:8080")
-    verdikt_api_token: str = os.getenv("ARGUS_VERDIKT_API_TOKEN", "argus-verdikt-local")
+    verdikt_api_token: str = os.getenv("ARGUS_VERDIKT_API_TOKEN", "")
     verdikt_timeout_seconds: float = float(os.getenv("ARGUS_VERDIKT_TIMEOUT_SECONDS", "3"))
     llm_input_cost_per_million_usd: float = float(
         os.getenv("ARGUS_LLM_INPUT_COST_PER_MILLION_USD", "0")

@@ -49,6 +49,9 @@ type Server struct {
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	database, err := db.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
 		return nil, err

@@ -49,5 +49,6 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 SQL
 
-curl -sS -X POST http://localhost:8090/v1/runbooks/index >/dev/null || true
+curl -sS -X POST -H "Authorization: Bearer ${ARGUS_AI_SERVICE_TOKEN:-argus-ai-local}" \
+  http://localhost:8090/v1/runbooks/index >/dev/null || true
 echo "Seeded demo users, service topology, and runbooks."

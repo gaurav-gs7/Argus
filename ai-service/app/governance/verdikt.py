@@ -34,6 +34,10 @@ class VerdiktClient:
         self.transport = transport
 
     async def evaluate_proposal(self, arguments: dict[str, Any]) -> GovernanceDecision:
+        if not self.api_token:
+            # No credential configured: deny rather than call Verdikt with an
+            # empty or guessable token.
+            raise GovernanceUnavailable("Verdikt API token is not configured; proposal denied")
         headers = {"Authorization": f"Bearer {self.api_token}"}
         body = {
             "server": "argus-ai",

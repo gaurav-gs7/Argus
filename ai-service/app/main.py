@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from prometheus_client import CONTENT_TYPE_LATEST
 
@@ -91,8 +92,33 @@ class ReportRequest(StrictModel):
     remediations: list[dict] = Field(default_factory=list)
 
 
+# Every route except health and metrics requires the Argus service token. The
+# RCA, search, explanation and report routes can reach a paid model (Gemini)
+# and read runbooks, so they are not public.
+PUBLIC_PATHS = frozenset({"/healthz", "/metrics"})
+
+
+def token_is_valid(authorization: str | None) -> bool:
+    expected = settings.ai_service_token
+    scheme, _, supplied = (authorization or "").partition(" ")
+    return bool(expected) and scheme.lower() == "bearer" and secrets.compare_digest(supplied, expected)
+
+
+@app.middleware("http")
+async def require_service_token(request: Request, call_next):
+    if request.url.path not in PUBLIC_PATHS and not token_is_valid(request.headers.get("authorization")):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "valid Argus service token required"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
+
+
 @app.on_event("startup")
 async def startup() -> None:
+    if not settings.ai_service_token:
+        raise RuntimeError("ARGUS_AI_SERVICE_TOKEN must be set; the AI service does not run unauthenticated")
     store.index_runbooks(settings.runbook_path)
     store.load_past_incidents(settings.incidents_path)
 
@@ -113,10 +139,7 @@ async def prometheus_metrics() -> Response:
 
 
 def require_internal_token(authorization: str | None) -> None:
-    scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not secrets.compare_digest(
-        supplied, settings.ai_service_token
-    ):
+    if not token_is_valid(authorization):
         raise HTTPException(status_code=401, detail="valid Argus service token required")
 
 

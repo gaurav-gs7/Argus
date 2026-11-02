@@ -4,6 +4,8 @@ set -euo pipefail
 INCIDENT_ID="${1:-}"
 API_URL="${ARGUS_API_URL:-http://localhost:8080}"
 AI_URL="${ARGUS_AI_URL:-http://localhost:8090}"
+# Matches the local value docker-compose passes to argus-ai; set it for any other deployment.
+AI_TOKEN="${ARGUS_AI_SERVICE_TOKEN:-argus-ai-local}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_TOKEN="${ARGUS_API_TOKEN:-}"
 if [[ -z "${API_TOKEN}" ]]; then
@@ -21,6 +23,7 @@ REMEDIATIONS="$(curl -sS -H "Authorization: Bearer ${API_TOKEN}" "${API_URL}/v1/
 
 curl -sS -X POST "${AI_URL}/v1/report/generate" \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${AI_TOKEN}" \
   -d "{
     \"incident\": ${INCIDENT},
     \"timeline\": ${TIMELINE},

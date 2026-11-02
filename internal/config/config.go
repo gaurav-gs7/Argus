@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -63,17 +64,19 @@ type Config struct {
 
 func Load() Config {
 	return Config{
-		Env:                        getenv("ARGUS_ENV", "local"),
-		HTTPAddr:                   getenv("ARGUS_HTTP_ADDR", ":8080"),
-		HTTPReadHeaderTimeout:      getduration("ARGUS_HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
-		HTTPReadTimeout:            getduration("ARGUS_HTTP_READ_TIMEOUT", 15*time.Second),
-		HTTPWriteTimeout:           getduration("ARGUS_HTTP_WRITE_TIMEOUT", 30*time.Second),
-		HTTPIdleTimeout:            getduration("ARGUS_HTTP_IDLE_TIMEOUT", 120*time.Second),
-		PostgresDSN:                getenv("ARGUS_POSTGRES_DSN", "postgres://argus:argus@localhost:5432/argus?sslmode=disable"),
-		RedisAddr:                  getenv("ARGUS_REDIS_ADDR", "localhost:6379"),
-		NATSURL:                    getenv("ARGUS_NATS_URL", "nats://localhost:4222"),
-		AIServiceURL:               strings.TrimRight(getenv("ARGUS_AI_SERVICE_URL", "http://localhost:8090"), "/"),
-		AIServiceToken:             getenv("ARGUS_AI_SERVICE_TOKEN", "argus-ai-local"),
+		Env:                   getenv("ARGUS_ENV", "local"),
+		HTTPAddr:              getenv("ARGUS_HTTP_ADDR", ":8080"),
+		HTTPReadHeaderTimeout: getduration("ARGUS_HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+		HTTPReadTimeout:       getduration("ARGUS_HTTP_READ_TIMEOUT", 15*time.Second),
+		HTTPWriteTimeout:      getduration("ARGUS_HTTP_WRITE_TIMEOUT", 30*time.Second),
+		HTTPIdleTimeout:       getduration("ARGUS_HTTP_IDLE_TIMEOUT", 120*time.Second),
+		PostgresDSN:           getenv("ARGUS_POSTGRES_DSN", "postgres://argus:argus@localhost:5432/argus?sslmode=disable"),
+		RedisAddr:             getenv("ARGUS_REDIS_ADDR", "localhost:6379"),
+		NATSURL:               getenv("ARGUS_NATS_URL", "nats://localhost:4222"),
+		// The AI service is opt-in, and its token has no default: a
+		// well-known fallback token is the same as no authentication.
+		AIServiceURL:               strings.TrimRight(getenv("ARGUS_AI_SERVICE_URL", ""), "/"),
+		AIServiceToken:             getenv("ARGUS_AI_SERVICE_TOKEN", ""),
 		PrometheusURL:              strings.TrimRight(getenv("ARGUS_PROMETHEUS_URL", ""), "/"),
 		PrometheusBearerToken:      getenv("ARGUS_PROMETHEUS_BEARER_TOKEN", ""),
 		LokiURL:                    strings.TrimRight(getenv("ARGUS_LOKI_URL", ""), "/"),
@@ -132,6 +135,14 @@ func getcsv(key string, fallback []string) []string {
 		return fallback
 	}
 	return values
+}
+
+// Validate rejects configurations that would run insecurely.
+func (c Config) Validate() error {
+	if c.AIServiceURL != "" && c.AIServiceToken == "" {
+		return fmt.Errorf("ARGUS_AI_SERVICE_TOKEN must be set when ARGUS_AI_SERVICE_URL is configured")
+	}
+	return nil
 }
 
 func getint(key string, fallback int) int {

@@ -30,3 +30,24 @@ func TestLoadOIDCConfiguration(t *testing.T) {
 		t.Fatalf("unexpected OIDC timeouts: discovery=%s provider=%s", cfg.OIDCDiscoveryTimeout, cfg.OIDCProviderTimeout)
 	}
 }
+
+func TestAIServiceIsOptInAndNeedsAToken(t *testing.T) {
+	t.Setenv("ARGUS_AI_SERVICE_URL", "")
+	t.Setenv("ARGUS_AI_SERVICE_TOKEN", "")
+	cfg := Load()
+	if cfg.AIServiceURL != "" || cfg.AIServiceToken != "" {
+		t.Fatalf("AI defaults url=%q token=%q; want both empty", cfg.AIServiceURL, cfg.AIServiceToken)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("AI disabled should be valid: %v", err)
+	}
+	t.Setenv("ARGUS_AI_SERVICE_URL", "http://argus-ai:8090/")
+	if err := Load().Validate(); err == nil {
+		t.Fatal("an AI URL without a token was accepted")
+	}
+	t.Setenv("ARGUS_AI_SERVICE_TOKEN", "secret")
+	cfg = Load()
+	if err := cfg.Validate(); err != nil || cfg.AIServiceURL != "http://argus-ai:8090" {
+		t.Fatalf("url=%q err=%v", cfg.AIServiceURL, err)
+	}
+}

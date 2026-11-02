@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
+
+# The service has no default credential; tests configure one before importing it.
+os.environ.setdefault("ARGUS_AI_SERVICE_TOKEN", "test-service-token")
 
 import httpx
 from fastapi import HTTPException
@@ -11,7 +15,9 @@ from app.governance.verdikt import GovernanceDecision, GovernanceUnavailable, Ve
 from app.llm.base import GenerationResult
 from app.observability.metrics import AIMetrics, ObservedLLM
 from app.remediation.advisor import DeterministicCandidate, RemediationAdvisor
-from app.main import RCASummarizeRequest, RemediationSuggestRequest, require_internal_token
+from fastapi.testclient import TestClient
+
+from app.main import RCASummarizeRequest, RemediationSuggestRequest, app, require_internal_token
 from app.safety.prompt_guard import sanitize_untrusted
 
 
@@ -60,10 +66,61 @@ class PromptInjectionTest(unittest.TestCase):
 
 class InternalAuthenticationTest(unittest.TestCase):
     def test_suggestion_surface_requires_service_token(self) -> None:
-        require_internal_token("Bearer argus-ai-local")
+        require_internal_token("Bearer test-service-token")
         with self.assertRaises(HTTPException) as denied:
             require_internal_token(None)
         self.assertEqual(denied.exception.status_code, 401)
+        with self.assertRaises(HTTPException):
+            require_internal_token("Bearer argus-ai-local")
+
+    def test_every_route_except_health_and_metrics_requires_the_token(self) -> None:
+        client = TestClient(app)  # no context manager: skip startup indexing
+        protected = {
+            "/v1/rca/summarize": {"incident": {}, "evidence": [], "primary_hypothesis": "x", "confidence": 0.5},
+            "/v1/remediation/explain": {},
+            "/v1/remediation/suggest": {},
+            "/v1/runbooks/index": None,
+            "/v1/runbooks/search": {"query": "postgres"},
+            "/v1/incidents/similar": {"query": "postgres"},
+            "/v1/report/generate": {},
+        }
+        for path, body in protected.items():
+            for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": "Bearer argus-ai-local"}, {"Authorization": "test-service-token"}):
+                response = client.post(path, json=body, headers=headers)
+                self.assertEqual(response.status_code, 401, f"{path} with {headers} returned {response.status_code}")
+        authorized = client.post(
+            "/v1/runbooks/search", json={"query": "postgres"}, headers={"Authorization": "Bearer test-service-token"}
+        )
+        self.assertEqual(authorized.status_code, 200, authorized.text)
+        for path in ("/healthz", "/metrics"):
+            self.assertEqual(client.get(path).status_code, 200, path)
+
+    def test_service_refuses_to_start_without_a_token(self) -> None:
+        from app import main
+
+        original = main.settings.ai_service_token
+        main.settings.ai_service_token = ""
+        try:
+            with self.assertRaises(RuntimeError):
+                with TestClient(main.app):
+                    pass
+            self.assertFalse(main.token_is_valid("Bearer "))
+        finally:
+            main.settings.ai_service_token = original
+
+
+class VerdiktCredentialTest(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_verdikt_token_denies_without_calling_verdikt(self) -> None:
+        calls: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(200, json={"allowed": True, "action": "PROPOSE_ONLY", "result": {"executed": False}})
+
+        client = VerdiktClient("http://verdikt", "", transport=httpx.MockTransport(handler))
+        with self.assertRaises(GovernanceUnavailable):
+            await client.evaluate_proposal({"action_type": "restart_pod"})
+        self.assertEqual(calls, [])
 
 
 class ControlPlaneContractTest(unittest.TestCase):
