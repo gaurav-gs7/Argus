@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/common"
@@ -30,11 +31,31 @@ type Entry struct {
 }
 
 type Service struct {
-	db *sql.DB
+	db        *sql.DB
+	onFailure func(Entry, error)
 }
 
 func NewService(db *sql.DB) *Service {
 	return &Service{db: db}
+}
+
+// OnFailure sets how Record reports an audit entry it could not write.
+func (s *Service) OnFailure(report func(Entry, error)) {
+	s.onFailure = report
+}
+
+// Record appends an audit entry for an event that changes no state of its
+// own (a skipped job, a reused proposal, a retry being scheduled). Entries
+// that accompany a state change must be written with WriteTx in the same
+// transaction instead. A failed append is reported, never silently dropped.
+func (s *Service) Record(ctx context.Context, entry Entry) {
+	if err := s.Write(ctx, entry); err != nil {
+		if s.onFailure != nil {
+			s.onFailure(entry, err)
+			return
+		}
+		slog.Error("audit append failed", "action", entry.Action, "resource_id", entry.ResourceID, "error", err)
+	}
 }
 
 func (s *Service) Write(ctx context.Context, entry Entry) error {

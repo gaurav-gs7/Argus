@@ -41,6 +41,8 @@ func main() {
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
 	metrics := telemetry.MustRegister()
+	reportAuditFailure := metrics.AuditFailureReporter(logger)
+	auditor.OnFailure(func(entry audit.Entry, err error) { reportAuditFailure(entry.Action, entry.ResourceID, err) })
 	controlState := workers.NewPostgresControlStateStore(database)
 	runner := workers.NewRunner(store, auditor, queueClient, metrics, workers.DefaultHandlers(controlState)...)
 	runner.Configure(workers.RunnerConfig{

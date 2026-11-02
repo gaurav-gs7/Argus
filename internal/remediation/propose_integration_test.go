@@ -2,6 +2,7 @@ package remediation_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/gauravgs7/argus/internal/rca"
 	"github.com/gauravgs7/argus/internal/remediation"
 	"github.com/gauravgs7/argus/internal/telemetry"
+	"github.com/gauravgs7/argus/internal/testutil"
 )
 
 var (
@@ -126,5 +128,111 @@ func TestExecuteRefusesClosedIncident(t *testing.T) {
 	}
 	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateApproved {
 		t.Fatalf("remediation status changed to %s", after.Status)
+	}
+}
+
+type countingExecutor struct{ calls int }
+
+func (e *countingExecutor) Name() string { return "counting" }
+func (e *countingExecutor) Execute(context.Context, incidents.RemediationAction, incidents.Incident, bool) (remediation.ExecutionOutcome, error) {
+	e.calls++
+	return remediation.ExecutionOutcome{Status: remediation.StateQueued}, nil
+}
+
+func auditCouplingEnv(t *testing.T, ctx context.Context) (*sql.DB, *incidents.Store, *audit.Service) {
+	t.Helper()
+	dsn := os.Getenv("ARGUS_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("ARGUS_TEST_POSTGRES_DSN is not set")
+	}
+	database, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	metricsOnce.Do(func() { metrics = telemetry.MustRegister() })
+	return database, incidents.NewStore(database), audit.NewService(database)
+}
+
+func approvedRemediation(t *testing.T, ctx context.Context, store *incidents.Store, status string) incidents.RemediationAction {
+	t.Helper()
+	incident, err := store.CreateManualIncident(ctx, incidents.ManualIncidentRequest{Title: fmt.Sprintf("coupling-%d", time.Now().UnixNano()), Service: "coupling-svc", Severity: "sev3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rem := incidents.RemediationAction{
+		ID: fmt.Sprintf("rem_coupling_%d", time.Now().UnixNano()), IncidentID: incident.ID, ActionType: "collect_diagnostics",
+		Target: "coupling-svc", Status: status, Risk: "low", IdempotencyKey: fmt.Sprintf("coupling-%d", time.Now().UnixNano()),
+		ProposedBy: "test", MaxAttempts: 1, PolicyDecision: map[string]any{},
+	}
+	if err := store.CreateRemediation(ctx, rem); err != nil {
+		t.Fatal(err)
+	}
+	return rem
+}
+
+// A reservation whose audit entry cannot be written is not made, and nothing
+// is dispatched.
+func TestExecuteReservationCommitsWithAudit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, store, auditor := auditCouplingEnv(t, ctx)
+	executor := &countingExecutor{}
+	service := remediation.NewService(store, auditor, policy.NewEngine(), nil, executor, metrics, nil)
+	rem := approvedRemediation(t, ctx, store, remediation.StateApproved)
+
+	restore := testutil.FailAuditAction(t, database, "remediation.execute_requested")
+	if _, err := service.Execute(ctx, rem.ID, true, "operator-1"); err == nil {
+		t.Fatal("execution was dispatched although its audit entry failed")
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateApproved || executor.calls != 0 {
+		t.Fatalf("status=%s executor calls=%d after a failed audit", after.Status, executor.calls)
+	}
+	restore()
+	if _, err := service.Execute(ctx, rem.ID, true, "operator-1"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateQueued || executor.calls != 1 ||
+		testutil.AuditCount(t, database, rem.ID, "remediation.execute_requested") != 1 {
+		t.Fatalf("status=%s calls=%d", after.Status, executor.calls)
+	}
+}
+
+func TestCancelCommitsWithAudit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, store, auditor := auditCouplingEnv(t, ctx)
+	service := remediation.NewService(store, auditor, policy.NewEngine(), nil, &countingExecutor{}, metrics, nil)
+	rem := approvedRemediation(t, ctx, store, remediation.StateQueued)
+
+	restore := testutil.FailAuditAction(t, database, "remediation.cancelled")
+	if err := service.Cancel(ctx, rem.ID, "operator-1"); err == nil {
+		t.Fatal("cancel reported success although its audit entry failed")
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateQueued {
+		t.Fatalf("status=%s after a failed cancel audit", after.Status)
+	}
+	restore()
+	if err := service.Cancel(ctx, rem.ID, "operator-1"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateCancelled || testutil.AuditCount(t, database, rem.ID, "remediation.cancelled") != 1 {
+		t.Fatalf("status=%s", after.Status)
+	}
+}
+
+func TestRecordReportsAuditFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, _, auditor := auditCouplingEnv(t, ctx)
+	testutil.FailAuditAction(t, database, "remediation.execution_reused")
+	var reported []string
+	auditor.OnFailure(func(entry audit.Entry, err error) { reported = append(reported, entry.Action+": "+err.Error()) })
+	auditor.Record(ctx, audit.Entry{ActorType: "user", Action: "remediation.execution_reused", ResourceType: "remediation", ResourceID: "rem_x"})
+	if len(reported) != 1 || !strings.Contains(reported[0], "injected audit failure") {
+		t.Fatalf("failure not reported: %v", reported)
 	}
 }

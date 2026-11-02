@@ -99,23 +99,28 @@ func AllowedFrom(to string) []string {
 }
 
 func (m *ServiceManager) CreateManual(ctx context.Context, req ManualIncidentRequest, actor string) (Incident, error) {
-	incident, err := m.store.CreateManualIncident(ctx, req)
+	var incident Incident
+	err := m.store.InTx(ctx, func(tx *Store) error {
+		created, err := tx.CreateManualIncident(ctx, req)
+		if err != nil {
+			return err
+		}
+		incident = created
+		return audit.WriteTx(ctx, tx.Tx(), audit.Entry{
+			ActorID:      actor,
+			ActorType:    "user",
+			Action:       "incident.created",
+			ResourceType: "incident",
+			ResourceID:   incident.ID,
+			AfterState: map[string]any{
+				"status":   incident.Status,
+				"severity": incident.Severity,
+			},
+		})
+	})
 	if err != nil {
 		return Incident{}, err
 	}
-
-	_ = m.auditor.Write(ctx, audit.Entry{
-		ActorID:      actor,
-		ActorType:    "user",
-		Action:       "incident.created",
-		ResourceType: "incident",
-		ResourceID:   incident.ID,
-		AfterState: map[string]any{
-			"status":   incident.Status,
-			"severity": incident.Severity,
-		},
-	})
-
 	return incident, nil
 }
 

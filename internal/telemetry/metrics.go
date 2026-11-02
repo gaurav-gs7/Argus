@@ -15,6 +15,7 @@ type Metrics struct {
 	LLMRequestDuration                *prometheus.HistogramVec
 	WorkerHeartbeatAgeSeconds         *prometheus.GaugeVec
 	RemediationDeadLettersTotal       *prometheus.CounterVec
+	AuditWriteFailuresTotal           *prometheus.CounterVec
 	RCAConfidence                     *prometheus.HistogramVec
 	ApprovalRequestsTotal             *prometheus.CounterVec
 	ApprovalsPending                  prometheus.Gauge
@@ -30,6 +31,16 @@ type Metrics struct {
 	TopologyIncidentGroupsTotal       *prometheus.CounterVec
 	TopologySuppressionRatio          prometheus.Histogram
 	TopologyAffectedServices          prometheus.Histogram
+}
+
+// AuditFailureReporter logs a failed audit append and counts it.
+func (m *Metrics) AuditFailureReporter(logger interface {
+	Error(msg string, args ...any)
+}) func(action, resourceID string, err error) {
+	return func(action, resourceID string, err error) {
+		m.AuditWriteFailuresTotal.WithLabelValues(action).Inc()
+		logger.Error("audit append failed", "action", action, "resource_id", resourceID, "error", err)
+	}
 }
 
 func MustRegister() *Metrics {
@@ -77,6 +88,10 @@ func MustRegister() *Metrics {
 			Help:    "LLM request duration",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"backend"}),
+		AuditWriteFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_audit_write_failures_total",
+			Help: "Audit entries for state-free events that could not be appended, by action",
+		}, []string{"action"}),
 		RemediationDeadLettersTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "argus_remediation_dead_letters_total",
 			Help: "Remediation jobs moved to the dead-letter stream, by reason",
@@ -164,6 +179,7 @@ func MustRegister() *Metrics {
 		m.LLMRequestDuration,
 		m.WorkerHeartbeatAgeSeconds,
 		m.RemediationDeadLettersTotal,
+		m.AuditWriteFailuresTotal,
 		m.RCAConfidence,
 		m.ApprovalRequestsTotal,
 		m.ApprovalsPending,

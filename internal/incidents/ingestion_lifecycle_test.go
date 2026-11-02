@@ -16,6 +16,7 @@ import (
 	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/db"
 	"github.com/gauravgs7/argus/internal/incidents"
+	"github.com/gauravgs7/argus/internal/testutil"
 )
 
 func ingestionTestManager(t *testing.T, ctx context.Context) (*incidents.ServiceManager, func() int) {
@@ -501,5 +502,24 @@ func TestResolveSetsResolvedAtOnce(t *testing.T) {
 	}
 	if _, applied, _ := store.TransitionIncident(ctx, created[0].ID, incidents.StatusResolved); applied {
 		t.Fatal("resolving a resolved incident applied again")
+	}
+}
+
+func TestManualIncidentCommitsWithAudit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager, count := ingestionTestManager(t, ctx)
+	database := openIngestionDB(t, ctx)
+	restore := testutil.FailAuditAction(t, database, "incident.created")
+	if _, err := manager.CreateManual(ctx, incidents.ManualIncidentRequest{Title: "audited", Service: "manual-svc", Severity: "sev3"}, "operator-1"); err == nil {
+		t.Fatal("incident created although its audit entry failed")
+	}
+	if count() != 0 {
+		t.Fatalf("an incident without its audit entry was persisted")
+	}
+	restore()
+	created, err := manager.CreateManual(ctx, incidents.ManualIncidentRequest{Title: "audited", Service: "manual-svc", Severity: "sev3"}, "operator-1")
+	if err != nil || count() != 1 || testutil.AuditCount(t, database, created.ID, "incident.created") != 1 {
+		t.Fatalf("create after recovery: err=%v count=%d", err, count())
 	}
 }

@@ -272,17 +272,24 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 
 	handler, ok := r.handlers[remediation.ActionType]
 	if !ok {
-		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, "no handler registered")
+		reason := "no handler registered for " + remediation.ActionType
+		if _, err := r.finish(ctx, remediation.ID, remediationpkg.StateFailed, nil, reason, audit.Entry{
+			ActorType: "system", Action: "remediation.failed", ResourceType: "remediation", ResourceID: remediation.ID,
+			AfterState: map[string]any{"status": remediationpkg.StateFailed, "error": reason},
+		}); err != nil {
+			return r.retryLater(ctx, msg, err)
+		}
 		_ = msg.Ack()
-		return fmt.Errorf("no handler for %s", remediation.ActionType)
+		return fmt.Errorf("%s", reason)
 	}
 	if err := handler.Validate(remediation); err != nil {
 		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
-		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, nil, err.Error())
-		_ = r.auditor.Write(ctx, audit.Entry{
+		if _, finishErr := r.finish(ctx, remediation.ID, remediationpkg.StateFailed, nil, err.Error(), audit.Entry{
 			ActorType: "system", Action: "remediation.validation_failed", ResourceType: "remediation", ResourceID: remediation.ID,
 			AfterState: map[string]any{"status": remediationpkg.StateFailed, "error": err.Error()},
-		})
+		}); finishErr != nil {
+			return r.retryLater(ctx, msg, finishErr)
+		}
 		_ = msg.Ack()
 		return err
 	}
@@ -308,11 +315,12 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 	if timedOut {
 		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
 		reason := fmt.Sprintf("handler exceeded the %s job timeout; outcome unknown, not retried", r.cfg.JobTimeout)
-		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateTimedOut, nil, reason)
-		_ = r.auditor.Write(ctx, audit.Entry{
+		if _, finishErr := r.finish(ctx, remediation.ID, remediationpkg.StateTimedOut, nil, reason, audit.Entry{
 			ActorType: "system", Action: "remediation.timed_out", ResourceType: "remediation", ResourceID: remediation.ID,
 			AfterState: map[string]any{"status": remediationpkg.StateTimedOut, "error": reason},
-		})
+		}); finishErr != nil {
+			return r.retryLater(ctx, msg, finishErr)
+		}
 		_ = msg.Ack()
 		return fmt.Errorf("%s", reason)
 	}
@@ -320,7 +328,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		deliveryAttempt := deliveries(msg)
 		if deliveryAttempt < uint64(remediation.MaxAttempts) && deliveryAttempt < uint64(r.cfg.MaxDeliver) {
 			backoff := RetryDelay(deliveryAttempt)
-			_ = r.auditor.Write(ctx, audit.Entry{
+			r.auditor.Record(ctx, audit.Entry{
 				ActorType:    "system",
 				Action:       "remediation.retry_scheduled",
 				ResourceType: "remediation",
@@ -337,8 +345,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		}
 
 		r.metrics.RemediationFailuresTotal.WithLabelValues(remediation.ActionType).Inc()
-		_, _ = r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateFailed, result, err.Error())
-		_ = r.auditor.Write(ctx, audit.Entry{
+		if _, finishErr := r.finish(ctx, remediation.ID, remediationpkg.StateFailed, result, err.Error(), audit.Entry{
 			ActorType:    "system",
 			Action:       "remediation.failed",
 			ResourceType: "remediation",
@@ -348,26 +355,14 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 				"error":            err.Error(),
 				"delivery_attempt": deliveryAttempt,
 			},
-		})
+		}); finishErr != nil {
+			return r.retryLater(ctx, msg, finishErr)
+		}
 		_ = msg.Ack()
 		return err
 	}
 
-	completed, err := r.store.CompleteRemediation(ctx, remediation.ID, remediationpkg.StateSucceeded, result, "")
-	if err != nil {
-		return r.retryLater(ctx, msg, err)
-	}
-	if !completed {
-		_ = r.auditor.Write(ctx, audit.Entry{
-			ActorType: "system", Action: "remediation.completion_conflict", ResourceType: "remediation", ResourceID: remediation.ID,
-			AfterState: map[string]any{"result": result},
-			Metadata:   map[string]any{"reason": "remediation left running before the result was recorded"},
-		})
-		return msg.Ack()
-	}
-	r.metrics.RemediationDuration.WithLabelValues(remediation.ActionType).Observe(time.Since(start).Seconds())
-
-	_ = r.auditor.Write(ctx, audit.Entry{
+	completed, err := r.finish(ctx, remediation.ID, remediationpkg.StateSucceeded, result, "", audit.Entry{
 		ActorType:    "system",
 		Action:       "remediation.completed",
 		ResourceType: "remediation",
@@ -377,7 +372,39 @@ func (r *Runner) handleMessage(ctx context.Context, msg *nats.Msg) error {
 			"result": result,
 		},
 	})
+	if err != nil {
+		return r.retryLater(ctx, msg, err)
+	}
+	if !completed {
+		r.auditor.Record(ctx, audit.Entry{
+			ActorType: "system", Action: "remediation.completion_conflict", ResourceType: "remediation", ResourceID: remediation.ID,
+			AfterState: map[string]any{"result": result},
+			Metadata:   map[string]any{"reason": "remediation left running before the result was recorded"},
+		})
+		return msg.Ack()
+	}
+	r.metrics.RemediationDuration.WithLabelValues(remediation.ActionType).Observe(time.Since(start).Seconds())
 	return msg.Ack()
+}
+
+// finish records a terminal outcome and its audit entry in one transaction.
+// If the audit entry cannot be written the outcome is not recorded either,
+// and the caller retries the message. It reports false, writing nothing, when
+// the remediation already left queued/running.
+func (r *Runner) finish(ctx context.Context, remediationID, status string, result map[string]any, errText string, entry audit.Entry) (bool, error) {
+	applied := false
+	err := r.store.InTx(ctx, func(tx *incidents.Store) error {
+		ok, err := tx.CompleteRemediation(ctx, remediationID, status, result, errText)
+		if err != nil || !ok {
+			return err
+		}
+		applied = true
+		return audit.WriteTx(ctx, tx.Tx(), entry)
+	})
+	if err != nil {
+		return false, err
+	}
+	return applied, nil
 }
 
 // runHandler executes one job under the job timeout. The handler receives a
@@ -416,7 +443,7 @@ func (r *Runner) auditSkip(ctx context.Context, remediationID, status string) {
 	if status == remediationpkg.StateSucceeded {
 		return // replay of a completed action; nothing worth recording
 	}
-	_ = r.auditor.Write(ctx, audit.Entry{
+	r.auditor.Record(ctx, audit.Entry{
 		ActorType: "system", Action: "remediation.execution_skipped", ResourceType: "remediation", ResourceID: remediationID,
 		AfterState: map[string]any{"status": status},
 		Metadata:   map[string]any{"reason": "remediation is not queued or running"},

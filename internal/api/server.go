@@ -27,6 +27,7 @@ import (
 	"github.com/gauravgs7/argus/internal/rca"
 	"github.com/gauravgs7/argus/internal/remediation"
 	"github.com/gauravgs7/argus/internal/telemetry"
+	"github.com/gauravgs7/argus/internal/topology"
 )
 
 type Server struct {
@@ -83,6 +84,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	}
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
+	reportAuditFailure := metrics.AuditFailureReporter(logger)
+	auditor.OnFailure(func(entry audit.Entry, err error) { reportAuditFailure(entry.Action, entry.ResourceID, err) })
 	approvalStore := approvals.NewStore(database)
 	approvalNotifier, err := approvals.NewWebhookNotifier(
 		cfg.ApprovalWebhookURL,
@@ -534,7 +537,24 @@ func (s *Server) handleIncidentStateChange(w http.ResponseWriter, r *http.Reques
 		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	previous, applied, err := s.store.TransitionIncident(r.Context(), incidentID, state)
+	var previous string
+	var applied bool
+	err := s.store.InTx(r.Context(), func(tx *incidents.Store) error {
+		var err error
+		previous, applied, err = tx.TransitionIncident(r.Context(), incidentID, state)
+		if err != nil || !applied {
+			return err
+		}
+		return audit.WriteTx(r.Context(), tx.Tx(), audit.Entry{
+			ActorID:      actorFromRequest(r),
+			ActorType:    "user",
+			Action:       "incident." + state,
+			ResourceType: "incident",
+			ResourceID:   incidentID,
+			BeforeState:  map[string]any{"status": previous},
+			AfterState:   map[string]any{"status": state},
+		})
+	})
 	switch {
 	case errors.Is(err, incidents.ErrIncidentNotFound):
 		common.WriteError(w, http.StatusNotFound, err.Error())
@@ -546,15 +566,6 @@ func (s *Server) handleIncidentStateChange(w http.ResponseWriter, r *http.Reques
 		common.WriteError(w, http.StatusConflict, fmt.Sprintf("incident is %s and cannot move to %s", previous, state))
 		return
 	}
-	_ = s.auditor.Write(r.Context(), audit.Entry{
-		ActorID:      actorFromRequest(r),
-		ActorType:    "user",
-		Action:       "incident." + state,
-		ResourceType: "incident",
-		ResourceID:   incidentID,
-		BeforeState:  map[string]any{"status": previous},
-		AfterState:   map[string]any{"status": state},
-	})
 	common.WriteJSON(w, http.StatusOK, map[string]string{"status": state})
 }
 
@@ -812,24 +823,31 @@ func (s *Server) handleTopologyDependencies(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, http.StatusBadRequest, "unsupported criticality")
 		return
 	}
-	item, err := s.store.UpsertServiceDependency(r.Context(), body)
+	var item topology.Dependency
+	err := s.store.InTx(r.Context(), func(tx *incidents.Store) error {
+		var err error
+		item, err = tx.UpsertServiceDependency(r.Context(), body)
+		if err != nil {
+			return err
+		}
+		return audit.WriteTx(r.Context(), tx.Tx(), audit.Entry{
+			ActorID:      actorFromRequest(r),
+			ActorType:    "user",
+			Action:       "service_dependency.upserted",
+			ResourceType: "service_dependency",
+			ResourceID:   item.ID,
+			AfterState: map[string]any{
+				"service":         item.Service,
+				"depends_on":      item.DependsOn,
+				"dependency_type": item.DependencyType,
+				"criticality":     item.Criticality,
+			},
+		})
+	})
 	if err != nil {
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_ = s.auditor.Write(r.Context(), audit.Entry{
-		ActorID:      actorFromRequest(r),
-		ActorType:    "user",
-		Action:       "service_dependency.upserted",
-		ResourceType: "service_dependency",
-		ResourceID:   item.ID,
-		AfterState: map[string]any{
-			"service":         item.Service,
-			"depends_on":      item.DependsOn,
-			"dependency_type": item.DependencyType,
-			"criticality":     item.Criticality,
-		},
-	})
 	common.WriteJSON(w, http.StatusCreated, item)
 }
 
