@@ -688,17 +688,38 @@ func (s *Store) SaveRCAReport(ctx context.Context, report RCAReport) error {
 	}
 	itemsJSON, _ := json.Marshal(report.EvidenceItems)
 	scoreJSON, _ := json.Marshal(report.Score)
+	if report.Candidates == nil {
+		report.Candidates = []RCACandidate{}
+	}
+	candidatesJSON, _ := json.Marshal(report.Candidates)
+	if report.LLMStatus == "" {
+		report.LLMStatus = LLMStatusDisabled
+	}
 	_, err := s.q.ExecContext(ctx, `
 		INSERT INTO rca_reports (
 			id, incident_id, deterministic_summary, llm_summary, primary_hypothesis,
 			contributing_factors, evidence, confidence, model_backend, model_name, topology_analysis,
-			evidence_items, score_breakdown, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			evidence_items, score_breakdown, candidates, llm_status, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 	`, report.ID, report.IncidentID, report.DeterministicSummary, report.LLMSummary, report.PrimaryHypothesis,
 		factorsJSON, evidenceJSON, report.Confidence, report.ModelBackend, report.ModelName, topologyJSON,
-		itemsJSON, scoreJSON, report.CreatedAt)
+		itemsJSON, scoreJSON, candidatesJSON, report.LLMStatus, report.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("save rca report: %w", err)
+	}
+	return nil
+}
+
+// UpdateRCAReportLLM records the outcome of the asynchronous LLM summary.
+func (s *Store) UpdateRCAReportLLM(ctx context.Context, reportID, status, summary, backend, model string) error {
+	if _, err := s.q.ExecContext(ctx, `
+		UPDATE rca_reports
+		SET llm_status = $2, llm_summary = NULLIF($3, ''),
+		    model_backend = COALESCE(NULLIF($4, ''), model_backend),
+		    model_name = COALESCE(NULLIF($5, ''), model_name)
+		WHERE id = $1
+	`, reportID, status, summary, backend, model); err != nil {
+		return fmt.Errorf("update rca llm summary: %w", err)
 	}
 	return nil
 }
@@ -707,7 +728,7 @@ func (s *Store) GetLatestRCAReport(ctx context.Context, incidentID string) (RCAR
 	row := s.q.QueryRowContext(ctx, `
 		SELECT id, incident_id, deterministic_summary, COALESCE(llm_summary, ''), COALESCE(primary_hypothesis, ''),
 		       contributing_factors, evidence, COALESCE(confidence, 0), COALESCE(model_backend, ''), COALESCE(model_name, ''),
-		       topology_analysis, evidence_items, score_breakdown, created_at
+		       topology_analysis, evidence_items, score_breakdown, candidates, llm_status, created_at
 		FROM rca_reports
 		WHERE incident_id = $1
 		ORDER BY created_at DESC
@@ -715,11 +736,11 @@ func (s *Store) GetLatestRCAReport(ctx context.Context, incidentID string) (RCAR
 	`, incidentID)
 
 	var report RCAReport
-	var factorsJSON, evidenceJSON, topologyJSON, itemsJSON, scoreJSON []byte
+	var factorsJSON, evidenceJSON, topologyJSON, itemsJSON, scoreJSON, candidatesJSON []byte
 	if err := row.Scan(
 		&report.ID, &report.IncidentID, &report.DeterministicSummary, &report.LLMSummary, &report.PrimaryHypothesis,
 		&factorsJSON, &evidenceJSON, &report.Confidence, &report.ModelBackend, &report.ModelName, &topologyJSON,
-		&itemsJSON, &scoreJSON, &report.CreatedAt,
+		&itemsJSON, &scoreJSON, &candidatesJSON, &report.LLMStatus, &report.CreatedAt,
 	); err != nil {
 		return RCAReport{}, fmt.Errorf("get rca report: %w", err)
 	}
@@ -729,8 +750,12 @@ func (s *Store) GetLatestRCAReport(ctx context.Context, incidentID string) (RCAR
 	_ = json.Unmarshal(topologyJSON, &report.Topology)
 	_ = json.Unmarshal(itemsJSON, &report.EvidenceItems)
 	_ = json.Unmarshal(scoreJSON, &report.Score)
+	_ = json.Unmarshal(candidatesJSON, &report.Candidates)
 	if report.EvidenceItems == nil {
 		report.EvidenceItems = []RCAEvidence{}
+	}
+	if report.Candidates == nil {
+		report.Candidates = []RCACandidate{}
 	}
 	return report, nil
 }

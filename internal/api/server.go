@@ -163,6 +163,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 }
 
 func (s *Server) Close() error {
+	if s.rcaService != nil {
+		s.rcaService.Close(10 * time.Second)
+	}
 	if s.approvalCancel != nil {
 		s.approvalCancel()
 	}
@@ -478,9 +481,13 @@ func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
 			common.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		common.WriteJSON(w, http.StatusAccepted, map[string]any{
+		// The deterministic report is complete when this returns; only the
+		// advisory LLM summary may still be pending (see llm_status).
+		common.WriteJSON(w, http.StatusCreated, map[string]any{
 			"rca_report_id": report.ID,
-			"status":        "queued",
+			"status":        "completed",
+			"llm_status":    report.LLMStatus,
+			"report":        report,
 		})
 		return
 	}
@@ -501,7 +508,7 @@ func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
 			common.WriteError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		report, candidates, err := s.rcaService.Generate(r.Context(), incidentID)
+		report, candidates, reused, err := s.rcaService.ReportForProposal(r.Context(), incident)
 		if err != nil {
 			common.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -511,9 +518,10 @@ func (s *Server) handleIncidentRoutes(w http.ResponseWriter, r *http.Request) {
 			common.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		_ = report
 		common.WriteJSON(w, http.StatusAccepted, map[string]any{
-			"remediations": actions,
+			"remediations":  actions,
+			"rca_report_id": report.ID,
+			"rca_reused":    reused,
 		})
 		return
 	}
@@ -858,7 +866,17 @@ func (s *Server) handleRunbookReindex(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	common.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+	// This used to answer 202 "queued" without doing anything.
+	result, err := s.rcaService.ReindexRunbooks(r.Context())
+	switch {
+	case errors.Is(err, rca.ErrAIServiceDisabled):
+		common.WriteError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	case err != nil:
+		common.WriteError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) notImplemented(w http.ResponseWriter, r *http.Request) {

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/correlation"
 	"github.com/gauravgs7/argus/internal/evidence"
 	"github.com/gauravgs7/argus/internal/incidents"
@@ -54,15 +57,17 @@ type Service struct {
 	correlator     *correlation.Correlator
 	collector      *evidence.Collector
 	now            func() time.Time
+
+	// The LLM summary runs after the deterministic report is saved, on a
+	// bounded pool so a slow model cannot hold API requests or pile up.
+	llmSlots   chan struct{}
+	llmTimeout time.Duration
+	background sync.WaitGroup
 }
 
-type Candidate struct {
-	ActionType       string         `json:"action_type"`
-	Target           string         `json:"target"`
-	Parameters       map[string]any `json:"parameters,omitempty"`
-	Risk             string         `json:"risk"`
-	RequiresApproval bool           `json:"requires_approval"`
-}
+// Candidate is a typed remediation an RCA supports. It is persisted with the
+// report so proposals can reuse it.
+type Candidate = incidents.RCACandidate
 
 // ruleEvidence is the probe run for one matched rule.
 type ruleEvidence struct {
@@ -94,9 +99,25 @@ func NewService(store *incidents.Store, aiServiceURL, aiServiceToken string, met
 		correlator:     correlation.New(),
 		collector:      collector,
 		now:            time.Now,
+		llmSlots:       make(chan struct{}, 4),
+		llmTimeout:     30 * time.Second,
 	}
 }
 
+// Close waits for in-flight LLM summaries, up to the given bound.
+func (s *Service) Close(wait time.Duration) {
+	done := make(chan struct{})
+	go func() { s.background.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(wait):
+	}
+}
+
+// Generate builds the deterministic RCA report, saves it, and returns it with
+// its remediation candidates. Nothing here waits on the LLM: when an AI
+// service is configured the report is saved with llm_status "pending" and the
+// advisory summary is added in the background.
 func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RCAReport, []Candidate, error) {
 	start := time.Now()
 	incident, err := s.store.GetIncident(ctx, incidentID)
@@ -116,11 +137,8 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 	}
 
 	result := s.analyze(ctx, incident, signals, topologyAnalysis)
-	for _, event := range probeTimelineEvents(incidentID, result.Items) {
-		_ = s.store.AddTimelineEvent(ctx, event)
-	}
-
 	report := incidents.RCAReport{
+		ID:                   common.NewID("rca"),
 		IncidentID:           incidentID,
 		DeterministicSummary: result.Summary,
 		PrimaryHypothesis:    result.Hypothesis,
@@ -131,17 +149,24 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 		Topology:             topologyAnalysis,
 		EvidenceItems:        result.Items,
 		Score:                result.Score,
+		Candidates:           result.Candidates,
+		LLMStatus:            incidents.LLMStatusDisabled,
+		CreatedAt:            s.now().UTC(),
+	}
+	if s.aiServiceURL != "" {
+		report.LLMStatus = incidents.LLMStatusPending
 	}
 
-	if llmSummary, backend, model, err := s.callAdvisor(
-		ctx, incident, result.Evidence, result.Hypothesis, result.Confidence, topologyAnalysis,
-	); err == nil {
-		report.LLMSummary = llmSummary
-		report.ModelBackend = backend
-		report.ModelName = model
-	}
-
-	if err := s.store.SaveRCAReport(ctx, report); err != nil {
+	// The report and the probe observations it cites are stored together.
+	err = s.store.InTx(ctx, func(tx *incidents.Store) error {
+		for _, event := range probeTimelineEvents(incidentID, result.Items) {
+			if err := tx.AddTimelineEvent(ctx, event); err != nil {
+				return err
+			}
+		}
+		return tx.SaveRCAReport(ctx, report)
+	})
+	if err != nil {
 		s.metrics.RCAJobsTotal.WithLabelValues("failed").Inc()
 		return incidents.RCAReport{}, nil, err
 	}
@@ -150,14 +175,51 @@ func (s *Service) Generate(ctx context.Context, incidentID string) (incidents.RC
 	// resolved) records the report without rewinding the incident.
 	_, _, _ = s.store.TransitionIncident(ctx, incidentID, incidents.StatusRCAGenerated)
 	s.metrics.RCAJobsTotal.WithLabelValues("succeeded").Inc()
-	s.metrics.RCADuration.WithLabelValues(report.ModelBackend).Observe(time.Since(start).Seconds())
+	s.metrics.RCADuration.WithLabelValues("deterministic").Observe(time.Since(start).Seconds())
 	s.metrics.RCAConfidence.WithLabelValues(result.Hypothesis).Observe(result.Confidence)
 
-	saved, err := s.store.GetLatestRCAReport(ctx, incidentID)
-	if err != nil {
-		return report, result.Candidates, nil
+	if report.LLMStatus == incidents.LLMStatusPending {
+		s.summarizeLater(incident, report, topologyAnalysis)
 	}
-	return saved, result.Candidates, nil
+	return report, result.Candidates, nil
+}
+
+// summarizeLater asks the AI service for an advisory summary in the
+// background and records the outcome on the report. If the pool is full the
+// summary is marked failed rather than queued without bound.
+func (s *Service) summarizeLater(incident incidents.Incident, report incidents.RCAReport, topologyAnalysis incidents.IncidentTopology) {
+	select {
+	case s.llmSlots <- struct{}{}:
+	default:
+		_ = s.store.UpdateRCAReportLLM(context.Background(), report.ID, incidents.LLMStatusFailed, "", "", "")
+		return
+	}
+	s.background.Add(1)
+	go func() {
+		defer s.background.Done()
+		defer func() { <-s.llmSlots }()
+		ctx, cancel := context.WithTimeout(context.Background(), s.llmTimeout)
+		defer cancel()
+		summary, backend, model, err := s.callAdvisor(ctx, incident, report.Evidence, report.PrimaryHypothesis, report.Confidence, topologyAnalysis)
+		status := incidents.LLMStatusCompleted
+		if err != nil {
+			status, summary, backend, model = incidents.LLMStatusFailed, "", "", ""
+		}
+		_ = s.store.UpdateRCAReportLLM(context.Background(), report.ID, status, summary, backend, model)
+	}()
+}
+
+// ReportForProposal returns the latest RCA report when it is still current,
+// that is, no alert has arrived for the incident since it was generated.
+// Otherwise it generates a new one. Proposals therefore no longer rerun the
+// probes and duplicate timeline events on every call.
+func (s *Service) ReportForProposal(ctx context.Context, incident incidents.Incident) (incidents.RCAReport, []Candidate, bool, error) {
+	latest, err := s.store.GetLatestRCAReport(ctx, incident.ID)
+	if err == nil && len(latest.Candidates) > 0 && !incident.LastSeenAt.After(latest.CreatedAt) {
+		return latest, latest.Candidates, true, nil
+	}
+	report, candidates, err := s.Generate(ctx, incident.ID)
+	return report, candidates, false, err
 }
 
 // analyze matches signals to rules, queries the configured backends for each
@@ -678,6 +740,35 @@ func (s *Service) SuggestRemediations(ctx context.Context, incidentID string) (m
 		return nil, err
 	}
 	if err := validateAdvisoryResponse(payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// ErrAIServiceDisabled reports that no AI service URL is configured.
+var ErrAIServiceDisabled = errors.New("ai service disabled")
+
+// ReindexRunbooks asks the AI service to rebuild its runbook index and
+// returns its response.
+func (s *Service) ReindexRunbooks(ctx context.Context) (map[string]any, error) {
+	if s.aiServiceURL == "" {
+		return nil, ErrAIServiceDisabled
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.aiServiceURL+"/v1/runbooks/index", nil)
+	if err != nil {
+		return nil, err
+	}
+	s.authorizeAIRequest(req)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("ai service returned %s", resp.Status)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
 		return nil, err
 	}
 	return payload, nil

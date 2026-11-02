@@ -124,8 +124,30 @@ type RCAReport struct {
 	Topology             IncidentTopology `json:"topology"`
 	EvidenceItems        []RCAEvidence    `json:"evidence_items"`
 	Score                RCAScore         `json:"score"`
-	CreatedAt            time.Time        `json:"created_at"`
+	// Candidates are the typed remediations this report supports; proposals
+	// reuse them instead of regenerating the report.
+	Candidates []RCACandidate `json:"candidates"`
+	// LLMStatus tracks the advisory summary, which is produced after the
+	// deterministic report is saved: disabled, pending, completed or failed.
+	LLMStatus string    `json:"llm_status"`
+	CreatedAt time.Time `json:"created_at"`
 }
+
+// RCACandidate is a typed remediation an RCA report supports.
+type RCACandidate struct {
+	ActionType       string         `json:"action_type"`
+	Target           string         `json:"target"`
+	Parameters       map[string]any `json:"parameters,omitempty"`
+	Risk             string         `json:"risk"`
+	RequiresApproval bool           `json:"requires_approval"`
+}
+
+const (
+	LLMStatusDisabled  = "disabled"
+	LLMStatusPending   = "pending"
+	LLMStatusCompleted = "completed"
+	LLMStatusFailed    = "failed"
+)
 
 // RCAEvidence is one observation behind an RCA report: a matched alert or a
 // probe that Argus actually sent to an observability backend.

@@ -93,7 +93,9 @@ operator_action="$(
   curl --silent --output "${TMP_DIR}/operator-action.json" --write-out '%{http_code}' \
     --request POST \
     --header "Authorization: Bearer ${operator}" \
-    "${API_URL}/v1/runbooks/reindex"
+    --header 'Content-Type: application/json' \
+    --data '{"title":"oidc-operator-may-create","service":"oidc-e2e","severity":"sev4"}' \
+    "${API_URL}/v1/incidents"
 )"
 admin_action="$(
   curl --silent --output "${TMP_DIR}/admin-action.json" --write-out '%{http_code}' \
@@ -126,7 +128,7 @@ tampered_code="$(
 assert_code "missing token" 401 "${unauth}"
 assert_code "viewer read" 200 "${viewer_read}"
 assert_code "viewer mutation" 403 "${viewer_write}"
-assert_code "operator action" 202 "${operator_action}"
+assert_code "operator action" 201 "${operator_action}"
 assert_code "admin action" 200 "${admin_action}"
 assert_code "operator audit verification" 403 "${operator_audit_verify}"
 assert_code "admin audit verification" 200 "${admin_audit_verify}"
