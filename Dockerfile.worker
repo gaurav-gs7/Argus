@@ -12,5 +12,4 @@ RUN adduser -D -u 10001 argus
 USER argus
 WORKDIR /app
 COPY --from=builder /out/argus-worker /app/argus-worker
-COPY migrations /app/migrations
 ENTRYPOINT ["/app/argus-worker"]

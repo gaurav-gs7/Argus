@@ -12,6 +12,5 @@ RUN adduser -D -u 10001 argus
 USER argus
 WORKDIR /app
 COPY --from=builder /out/argus-api /app/argus-api
-COPY migrations /app/migrations
 EXPOSE 8080
 ENTRYPOINT ["/app/argus-api"]

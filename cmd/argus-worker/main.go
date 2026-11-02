@@ -28,8 +28,12 @@ func main() {
 		log.Fatal(err)
 	}
 	defer database.Close()
-	if err := db.Migrate(ctx, database); err != nil {
+	applied, err := db.Apply(ctx, database, nil)
+	if err != nil {
 		log.Fatal(err)
+	}
+	for _, m := range applied {
+		logger.Info("applied schema migration", "version", m.Version, "name", m.Name)
 	}
 
 	queueClient, err := queue.Connect(cfg.NATSURL)

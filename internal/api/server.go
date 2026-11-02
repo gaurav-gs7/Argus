@@ -56,8 +56,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Migrate(ctx, database); err != nil {
+	applied, err := db.Apply(ctx, database, nil)
+	if err != nil {
 		return nil, err
+	}
+	for _, m := range applied {
+		logger.Info("applied schema migration", "version", m.Version, "name", m.Name)
 	}
 
 	queueClient, err := queue.Connect(cfg.NATSURL)

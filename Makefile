@@ -39,7 +39,7 @@ integration-test:
 		docker compose -f deploy/compose.test.yaml up -d --wait; \
 		trap 'docker compose -f deploy/compose.test.yaml down -v' EXIT; \
 		ARGUS_TEST_POSTGRES_DSN='postgres://argus:argus@127.0.0.1:55432/argus?sslmode=disable' \
-		go test -race -count=1 ./internal/audit; \
+		go test -race -count=1 ./internal/audit ./internal/db ./migrations; \
 		ARGUS_TEST_POSTGRES_DSN='postgres://argus:argus@127.0.0.1:55432/argus?sslmode=disable' \
 		ARGUS_TEST_NATS_URL='nats://127.0.0.1:54222' \
 		go test -race -count=1 -p 1 ./internal/incidents ./internal/queue ./internal/workers ./internal/rca ./internal/remediation
