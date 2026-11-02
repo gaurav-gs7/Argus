@@ -6,7 +6,7 @@ Argus uses Docker Compose for supported local development. The Kubernetes packag
 
 - Helm chart at `deploy/helm/argus`
 - Kustomize base plus `local` and `production` overlays at `deploy/kustomize`
-- API, worker, and optional AI deployments (worker replicas share one JetStream queue group, so `worker.replicas` above 1 splits remediation work rather than failing to subscribe)
+- API, worker, and optional AI deployments (worker replicas pull from one durable JetStream consumer, so `worker.replicas` above 1 splits remediation work)
 - non-root pods, dropped Linux capabilities, read-only root filesystems, and disabled service-account token mounts
 - CPU and memory requests/limits sized conservatively
 - API and AI health probes
@@ -85,5 +85,5 @@ CI proves chart linting and deterministic manifest generation, not cluster compa
 3. external secret integration
 4. backup/restore and JetStream recovery exercises
 5. load, disruption, rollback, and network-policy tests
-6. an explicit database migration job/versioning strategy for independently scaled releases
+6. a dedicated migration job; today the API and worker apply the embedded, checksummed migrations at startup under an advisory lock, and an older release refuses to start against a newer schema, so releases must ship backward-compatible (expand, then contract) migrations
 

@@ -33,7 +33,28 @@ Core endpoints:
 - `GET /v1/topology`
 - `POST /v1/topology/dependencies` (admin)
 - `GET /v1/runbooks`
-- `POST /v1/runbooks/reindex`
+- `POST /v1/runbooks/reindex` (forwards to the AI service; `503` when no AI service is configured, `502` when it fails)
+
+## Request Limits
+
+Request bodies are capped at 1 MiB, and at 8 MiB for `POST /v1/alerts/alertmanager` because a large alert group is legitimate. A larger body returns `413` before any of it is processed. The server closes connections whose headers take longer than `ARGUS_HTTP_READ_HEADER_TIMEOUT` (default 5s) or whose full request takes longer than `ARGUS_HTTP_READ_TIMEOUT` (15s), bounds response writes with `ARGUS_HTTP_WRITE_TIMEOUT` (30s), and drops idle keep-alive connections after `ARGUS_HTTP_IDLE_TIMEOUT` (120s).
+
+## RCA
+
+`POST /v1/incidents/{incident_id}/rca/generate` runs the deterministic RCA (probes, scoring, candidates) and returns `201` once the report is stored:
+
+```json
+{
+  "rca_report_id": "rca_...",
+  "status": "completed",
+  "llm_status": "pending",
+  "report": {"primary_hypothesis": "...", "confidence": 0.8, "candidates": [...]}
+}
+```
+
+The report and its probe timeline events commit in one transaction. It does not wait for the LLM. When an AI service is configured, the optional narrative summary is generated in the background (at most four at a time, 30s each) and written to the same report; `GET /v1/incidents/{incident_id}/rca` shows `llm_status` moving from `pending` to `completed` or `failed`. Without an AI service it is `disabled`. A failed summary never changes the deterministic result.
+
+`POST /v1/incidents/{incident_id}/remediations/propose` reuses the latest report and its stored candidates. It regenerates RCA only when there is no report yet or the incident received new signals after the report was created. The response includes `rca_report_id` and `rca_reused`, and repeated proposals do not add duplicate timeline events.
 
 ## Judikt Finding Contract
 
@@ -77,7 +98,7 @@ Approval decision body:
 
 The actor is derived from the verified OIDC token's issuer and subject. Signature, issuer, audience, expiry, signing algorithm, and role mapping are validated before authorization. `reason` is required, a proposer cannot decide their own request by default, and replayed or expired decisions fail closed.
 
-Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
+Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution: the remediation is reserved as `queued` and published to JetStream, and a worker runs it asynchronously. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
 
 Parameterized actions carry immutable desired state through proposal, policy, approval notification, audit, worker execution, and optional Helios delegation:
 

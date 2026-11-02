@@ -27,6 +27,12 @@ make seed
 - Grafana: `http://localhost:3000`
 - Payments API: `http://localhost:9001`
 
+Running `argus-api` outside Compose leaves the AI service off unless `ARGUS_AI_SERVICE_URL` is set; Argus then refuses to start without `ARGUS_AI_SERVICE_TOKEN`. Deterministic ingestion and RCA work either way.
+
+## Schema Migrations
+
+The schema lives in `migrations/NNNN_name.sql`, embedded in the API and worker binaries. Both apply pending migrations at startup under one PostgreSQL advisory lock, each file in its own transaction, and record them in `schema_migrations` with a SHA-256 checksum. To change the schema, add the next numbered file; never edit or renumber a released one, because startup fails if an applied file's checksum changes or if the database has a migration the binary does not know (an older build against a newer schema). Files must not contain statements that cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`. A database created before migrations were tracked is adopted by `0001_baseline.sql`, which is idempotent.
+
 ## Recommended LLM Modes
 
 - `mock`: safest default for low-memory laptops

@@ -5,7 +5,7 @@
 - no arbitrary shell commands
 - only registered handlers execute work
 - every handler supports dry-run
-- approval mutations are atomically audited; other mutations append audit records in a separate step
+- every state change commits in one transaction with its audit entry; event-only entries are appended separately and failures are counted
 - high-risk actions are denied
 - medium-risk actions require approval
 - approval requests are durable and bound to one exact remediation
@@ -18,6 +18,8 @@
 - idempotency keys prevent duplicate execution
 - action parameters are part of proposal deduplication and idempotency identity
 - durable execution receipts make JetStream replay safe
+- each job is published once per reservation (`Nats-Msg-Id`), retried with backoff on infrastructure errors, bounded by `ARGUS_WORKER_MAX_DELIVER`, and dead-lettered to `ARGUS_DEAD_LETTER` when malformed or exhausted
+- a job that exceeds `ARGUS_WORKER_JOB_TIMEOUT` is marked `timed_out` instead of retried, and a worker runs at most `ARGUS_WORKER_CONCURRENCY` jobs at once
 
 ## Approved V1 Actions
 
@@ -60,4 +62,4 @@ Notification delivery never grants authority. Generic webhooks only carry the bo
 
 Defaults are intentionally laptop-friendly: one goroutine sweeps every 15 seconds, no extra container is required, and an empty webhook URL leaves requests queryable through the API/CLI. For a generic webhook, set `ARGUS_APPROVAL_WEBHOOK_SECRET` so receivers can verify `X-Argus-Signature-256`. Slack uses a free incoming webhook plus a free Slack app for signed interactivity; it does not add a local service.
 
-These controls bound what v1 can execute; they do not make queue publication, external side effects, or every audit append atomic. See [Threat Model And Explicit Limitations](threat-model.md) for the crash-window and policy-coverage matrix.
+These controls bound what v1 can execute; they do not make queue publication or external side effects atomic with PostgreSQL. See [Threat Model And Explicit Limitations](threat-model.md) for the crash-window and policy-coverage matrix.
