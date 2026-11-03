@@ -55,6 +55,9 @@ type Config struct {
 	WorkerJobTimeout           time.Duration
 	WorkerMaxDeliver           int
 	WorkerHeartbeatEvery       time.Duration
+	OutboxPollInterval         time.Duration
+	RedispatchAfter            time.Duration
+	MaxRedispatches            int
 	ApprovalWebhookURL         string
 	ApprovalWebhookMode        string
 	ApprovalWebhookSecret      string
@@ -114,6 +117,9 @@ func Load() Config {
 		WorkerJobTimeout:           getduration("ARGUS_WORKER_JOB_TIMEOUT", 2*time.Minute),
 		WorkerMaxDeliver:           getint("ARGUS_WORKER_MAX_DELIVER", 5),
 		WorkerHeartbeatEvery:       getduration("ARGUS_WORKER_HEARTBEAT_EVERY", 10*time.Second),
+		OutboxPollInterval:         getduration("ARGUS_OUTBOX_POLL_INTERVAL", time.Second),
+		RedispatchAfter:            getduration("ARGUS_REDISPATCH_AFTER", 10*time.Minute),
+		MaxRedispatches:            getint("ARGUS_MAX_REDISPATCHES", 3),
 		ApprovalWebhookURL:         getenv("ARGUS_APPROVAL_WEBHOOK_URL", ""),
 		ApprovalWebhookMode:        strings.ToLower(getenv("ARGUS_APPROVAL_WEBHOOK_MODE", "generic")),
 		ApprovalWebhookSecret:      getenv("ARGUS_APPROVAL_WEBHOOK_SECRET", ""),

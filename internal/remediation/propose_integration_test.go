@@ -51,7 +51,7 @@ func TestProposalUsesIncidentEnvironment(t *testing.T) {
 	ingest := func(environment string) incidents.Incident {
 		created, err := manager.IngestAlertmanager(ctx, incidents.AlertmanagerWebhook{Alerts: []incidents.AlertmanagerAlert{{
 			Status: "firing", StartsAt: time.Now().UTC(), Fingerprint: fmt.Sprintf("env-%s-%d", environment, time.Now().UnixNano()),
-			Labels: map[string]string{"alertname": "PolicyEnvTest", "service": "policy-" + environment, "environment": environment},
+			Labels: map[string]string{"alertname": "PolicyEnvTest", "service": fmt.Sprintf("policy-%s-%d", environment, time.Now().UnixNano()), "environment": environment},
 		}}}, "test")
 		if err != nil {
 			t.Fatal(err)

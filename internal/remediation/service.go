@@ -21,20 +21,35 @@ import (
 )
 
 type Service struct {
-	store     *incidents.Store
-	auditor   *audit.Service
-	policy    *policy.Engine
-	metrics   *telemetry.Metrics
-	exec      Executor
-	approvals approvals.Workflow
+	store      *incidents.Store
+	auditor    *audit.Service
+	policy     *policy.Engine
+	metrics    *telemetry.Metrics
+	exec       Executor
+	approvals  approvals.Workflow
+	dispatcher *Dispatcher
 }
 
+// NewService builds the remediation service. With the local executor (the
+// default) and a queue client, it also builds the outbox Dispatcher that
+// publishes jobs; run it with Dispatcher().Run.
 func NewService(store *incidents.Store, auditor *audit.Service, policyEngine *policy.Engine, queueClient *queue.Client, executor Executor, metrics *telemetry.Metrics, approvalWorkflow approvals.Workflow) *Service {
 	if executor == nil {
-		executor = NewLocalExecutor(queueClient)
+		executor = NewLocalExecutor()
 	}
-	return &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor, approvals: approvalWorkflow}
+	s := &Service{store: store, auditor: auditor, policy: policyEngine, metrics: metrics, exec: executor, approvals: approvalWorkflow}
+	if queueClient != nil && isQueued(executor) {
+		s.dispatcher = NewDispatcher(store, auditor, queueClient, metrics, nil, DispatcherConfig{})
+	}
+	return s
 }
+
+// UseDispatcher replaces the outbox dispatcher (configuration, tests).
+func (s *Service) UseDispatcher(d *Dispatcher) { s.dispatcher = d }
+
+// Dispatcher returns the outbox dispatcher, or nil when the executor does
+// not dispatch through JetStream.
+func (s *Service) Dispatcher() *Dispatcher { return s.dispatcher }
 
 func firstNonEmptyRisk(values ...string) string {
 	for _, value := range values {
@@ -268,20 +283,34 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	}
 
 	start := time.Now()
+	queued := isQueued(s.exec)
 	// Reserve execution before dispatch so concurrent callers and fast workers
 	// cannot race the persisted mode or enqueue the same action twice. The
-	// reservation and its audit entry commit together.
+	// reservation, its audit entry and (for queued executors) the outbox job
+	// commit together, so a crash after this point cannot strand the
+	// remediation in queued without a job to publish.
 	var queuedAt time.Time
+	var dispatchID string
 	err = s.store.InTx(ctx, func(tx *incidents.Store) error {
 		reservedAt, err := tx.MarkRemediationQueued(ctx, remediation.ID, dryRun)
 		if err != nil {
 			return err
 		}
 		queuedAt = reservedAt
+		after := map[string]any{"status": StateQueued, "dry_run": dryRun, "executor": s.exec.Name()}
+		if queued {
+			reserved := remediation
+			reserved.QueuedAt, reserved.DryRun = &queuedAt, dryRun
+			dispatchID = reservationEventID(reserved)
+			if err := Enqueue(ctx, tx.Tx(), reserved, dispatchID, DispatchExecute); err != nil {
+				return err
+			}
+			after["dispatch_id"] = dispatchID
+		}
 		return audit.WriteTx(ctx, tx.Tx(), audit.Entry{
 			ActorID: actor, ActorType: "user", Action: "remediation.execute_requested", ResourceType: "remediation", ResourceID: remediationID,
 			BeforeState: map[string]any{"status": remediation.Status},
-			AfterState:  map[string]any{"status": StateQueued, "dry_run": dryRun, "executor": s.exec.Name()},
+			AfterState:  after,
 		})
 	})
 	if err != nil {
@@ -297,6 +326,16 @@ func (s *Service) Execute(ctx context.Context, remediationID string, dryRun bool
 	}
 	remediation.QueuedAt = &queuedAt
 	remediation.DryRun = dryRun
+	if queued {
+		// Publish now so the usual path has no poll delay. If JetStream is
+		// unavailable the job stays in the outbox and the dispatcher keeps
+		// retrying; the remediation is durably queued either way.
+		if s.dispatcher != nil {
+			_ = s.dispatcher.PublishOne(ctx, dispatchID)
+		}
+		s.metrics.RemediationDuration.WithLabelValues(remediation.ActionType).Observe(time.Since(start).Seconds())
+		return false, nil
+	}
 	outcome, err := s.exec.Execute(ctx, remediation, incident, dryRun)
 	if err != nil {
 		if releaseErr := s.store.InTx(ctx, func(tx *incidents.Store) error {

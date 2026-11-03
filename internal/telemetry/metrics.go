@@ -3,34 +3,37 @@ package telemetry
 import "github.com/prometheus/client_golang/prometheus"
 
 type Metrics struct {
-	IncidentsTotal                    *prometheus.CounterVec
-	IncidentsOpen                     prometheus.Gauge
-	RCAJobsTotal                      *prometheus.CounterVec
-	RCADuration                       *prometheus.HistogramVec
-	RemediationsTotal                 *prometheus.CounterVec
-	RemediationDuration               *prometheus.HistogramVec
-	RemediationFailuresTotal          *prometheus.CounterVec
-	PolicyDenialsTotal                *prometheus.CounterVec
-	LLMRequestsTotal                  *prometheus.CounterVec
-	LLMRequestDuration                *prometheus.HistogramVec
-	WorkerHeartbeatAgeSeconds         *prometheus.GaugeVec
-	RemediationDeadLettersTotal       *prometheus.CounterVec
-	AuditWriteFailuresTotal           *prometheus.CounterVec
-	RCAConfidence                     *prometheus.HistogramVec
-	ApprovalRequestsTotal             *prometheus.CounterVec
-	ApprovalsPending                  prometheus.Gauge
-	ApprovalDecisionDuration          prometheus.Histogram
-	ApprovalEscalationsTotal          *prometheus.CounterVec
-	ApprovalNotificationFailuresTotal *prometheus.CounterVec
-	AuthenticationFailuresTotal       *prometheus.CounterVec
-	AuthorizationDenialsTotal         *prometheus.CounterVec
-	AuditVerificationsTotal           *prometheus.CounterVec
-	AuditChainIntegrity               prometheus.Gauge
-	AuditChainHeadPosition            prometheus.Gauge
-	TopologyAlertsTotal               *prometheus.CounterVec
-	TopologyIncidentGroupsTotal       *prometheus.CounterVec
-	TopologySuppressionRatio          prometheus.Histogram
-	TopologyAffectedServices          prometheus.Histogram
+	IncidentsTotal                        *prometheus.CounterVec
+	IncidentsOpen                         prometheus.Gauge
+	RCAJobsTotal                          *prometheus.CounterVec
+	RCADuration                           *prometheus.HistogramVec
+	RemediationsTotal                     *prometheus.CounterVec
+	RemediationDuration                   *prometheus.HistogramVec
+	RemediationFailuresTotal              *prometheus.CounterVec
+	PolicyDenialsTotal                    *prometheus.CounterVec
+	LLMRequestsTotal                      *prometheus.CounterVec
+	LLMRequestDuration                    *prometheus.HistogramVec
+	WorkerHeartbeatAgeSeconds             *prometheus.GaugeVec
+	RemediationDeadLettersTotal           *prometheus.CounterVec
+	RemediationDispatchesTotal            *prometheus.CounterVec
+	RemediationRedispatchesTotal          *prometheus.CounterVec
+	RemediationOutboxOldestPendingSeconds prometheus.Gauge
+	AuditWriteFailuresTotal               *prometheus.CounterVec
+	RCAConfidence                         *prometheus.HistogramVec
+	ApprovalRequestsTotal                 *prometheus.CounterVec
+	ApprovalsPending                      prometheus.Gauge
+	ApprovalDecisionDuration              prometheus.Histogram
+	ApprovalEscalationsTotal              *prometheus.CounterVec
+	ApprovalNotificationFailuresTotal     *prometheus.CounterVec
+	AuthenticationFailuresTotal           *prometheus.CounterVec
+	AuthorizationDenialsTotal             *prometheus.CounterVec
+	AuditVerificationsTotal               *prometheus.CounterVec
+	AuditChainIntegrity                   prometheus.Gauge
+	AuditChainHeadPosition                prometheus.Gauge
+	TopologyAlertsTotal                   *prometheus.CounterVec
+	TopologyIncidentGroupsTotal           *prometheus.CounterVec
+	TopologySuppressionRatio              prometheus.Histogram
+	TopologyAffectedServices              prometheus.Histogram
 }
 
 // AuditFailureReporter logs a failed audit append and counts it.
@@ -92,6 +95,18 @@ func MustRegister() *Metrics {
 			Name: "argus_audit_write_failures_total",
 			Help: "Audit entries for state-free events that could not be appended, by action",
 		}, []string{"action"}),
+		RemediationDispatchesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_remediation_dispatches_total",
+			Help: "Outbox publish attempts for remediation jobs, by result (published, failed, skipped)",
+		}, []string{"result"}),
+		RemediationRedispatchesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_remediation_redispatches_total",
+			Help: "Reconciler actions on remediations no worker picked up, by result (redispatched, exhausted)",
+		}, []string{"result"}),
+		RemediationOutboxOldestPendingSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "argus_remediation_outbox_oldest_pending_seconds",
+			Help: "Age of the oldest remediation job not yet accepted by JetStream (0 when none)",
+		}),
 		RemediationDeadLettersTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "argus_remediation_dead_letters_total",
 			Help: "Remediation jobs moved to the dead-letter stream, by reason",
@@ -179,6 +194,9 @@ func MustRegister() *Metrics {
 		m.LLMRequestDuration,
 		m.WorkerHeartbeatAgeSeconds,
 		m.RemediationDeadLettersTotal,
+		m.RemediationDispatchesTotal,
+		m.RemediationRedispatchesTotal,
+		m.RemediationOutboxOldestPendingSeconds,
 		m.AuditWriteFailuresTotal,
 		m.RCAConfidence,
 		m.ApprovalRequestsTotal,

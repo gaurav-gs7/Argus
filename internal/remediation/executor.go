@@ -11,7 +11,6 @@ import (
 
 	"github.com/gauravgs7/argus/internal/common"
 	"github.com/gauravgs7/argus/internal/incidents"
-	"github.com/gauravgs7/argus/internal/queue"
 )
 
 type ExecutionOutcome struct {
@@ -24,44 +23,28 @@ type Executor interface {
 	Execute(ctx context.Context, remediation incidents.RemediationAction, incident incidents.Incident, dryRun bool) (ExecutionOutcome, error)
 }
 
-type LocalExecutor struct {
-	queue *queue.Client
+// LocalExecutor runs remediations on Argus's own workers. It does not
+// publish anything itself: Execute writes the job to the remediation outbox
+// in the reservation transaction, and a Dispatcher publishes it.
+type LocalExecutor struct{}
+
+func NewLocalExecutor() *LocalExecutor { return &LocalExecutor{} }
+
+func (e *LocalExecutor) Name() string { return "local" }
+
+// Queued marks executors whose work goes through the outbox and JetStream.
+func (e *LocalExecutor) Queued() bool { return true }
+
+func (e *LocalExecutor) Execute(context.Context, incidents.RemediationAction, incidents.Incident, bool) (ExecutionOutcome, error) {
+	return ExecutionOutcome{}, fmt.Errorf("the local executor dispatches through the remediation outbox")
 }
 
-func NewLocalExecutor(queueClient *queue.Client) *LocalExecutor {
-	return &LocalExecutor{queue: queueClient}
-}
+// queuedExecutor is implemented by executors dispatched via the outbox.
+type queuedExecutor interface{ Queued() bool }
 
-func (e *LocalExecutor) Name() string {
-	return "local"
-}
-
-func (e *LocalExecutor) Execute(ctx context.Context, remediation incidents.RemediationAction, incident incidents.Incident, dryRun bool) (ExecutionOutcome, error) {
-	if _, err := e.queue.Publish(ctx, queue.RemediationSubject, queue.Event{
-		EventID:        reservationEventID(remediation),
-		EventType:      "remediation.execute",
-		OccurredAt:     time.Now().UTC(),
-		Producer:       "argus-api",
-		IdempotencyKey: remediation.IdempotencyKey,
-		Payload: map[string]any{
-			"remediation_id": remediation.ID,
-			"incident_id":    incident.ID,
-			"dry_run":        dryRun,
-			"executor":       e.Name(),
-		},
-	}); err != nil {
-		return ExecutionOutcome{}, err
-	}
-
-	return ExecutionOutcome{
-		Status: "queued",
-		Result: map[string]any{
-			"executor":        e.Name(),
-			"queue_subject":   "remediation.execute",
-			"idempotency_key": remediation.IdempotencyKey,
-			"dry_run":         dryRun,
-		},
-	}, nil
+func isQueued(executor Executor) bool {
+	q, ok := executor.(queuedExecutor)
+	return ok && q.Queued()
 }
 
 // reservationEventID identifies one queue reservation of a remediation. It is

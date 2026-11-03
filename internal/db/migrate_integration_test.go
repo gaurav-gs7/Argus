@@ -5,51 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/db"
+	"github.com/gauravgs7/argus/internal/testutil"
 	"github.com/gauravgs7/argus/migrations"
 )
 
-// scratchDatabase creates an empty database next to the one in
-// ARGUS_TEST_POSTGRES_DSN and drops it when the test ends.
-func scratchDatabase(t *testing.T) *sql.DB {
-	t.Helper()
-	dsn := os.Getenv("ARGUS_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("ARGUS_TEST_POSTGRES_DSN is not set")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	admin, err := db.Open(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := fmt.Sprintf("argus_migrate_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
-		admin.Close()
-		t.Fatalf("create scratch database: %v", err)
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = "/" + name
-	scratch, err := db.Open(ctx, u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		scratch.Close()
-		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
-		admin.Close()
-	})
-	return scratch
-}
+func scratchDatabase(t *testing.T) *sql.DB { return testutil.ScratchDatabase(t) }
 
 func embedded(t *testing.T) []migrations.Migration {
 	t.Helper()

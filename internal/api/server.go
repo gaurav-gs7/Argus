@@ -44,6 +44,7 @@ type Server struct {
 	authenticator      auth.Authenticator
 	approvalService    *approvals.Service
 	approvalCancel     context.CancelFunc
+	dispatchCancel     context.CancelFunc
 	auditVerifyCancel  context.CancelFunc
 	slackApproval      *approvals.SlackWorkflow
 }
@@ -145,9 +146,19 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	case "helios":
 		executor = remediation.NewHeliosExecutor(cfg.HeliosBaseURL, cfg.HeliosAdminToken, cfg.HeliosPollTimeout)
 	default:
-		executor = remediation.NewLocalExecutor(queueClient)
+		executor = remediation.NewLocalExecutor()
 	}
 	remediationService := remediation.NewService(store, auditor, policy.NewEngineForEnvironments(cfg.RemediationEnvironments), queueClient, executor, metrics, approvalService)
+	dispatchContext, dispatchCancel := context.WithCancel(context.Background())
+	if remediationService.Dispatcher() != nil {
+		dispatcher := remediation.NewDispatcher(store, auditor, queueClient, metrics, logger, remediation.DispatcherConfig{
+			PollInterval:    cfg.OutboxPollInterval,
+			RedispatchAfter: cfg.RedispatchAfter,
+			MaxRedispatches: cfg.MaxRedispatches,
+		})
+		remediationService.UseDispatcher(dispatcher)
+		go dispatcher.Run(dispatchContext)
+	}
 
 	server := &Server{
 		cfg:                cfg,
@@ -163,6 +174,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		authenticator:      authenticator,
 		approvalService:    approvalService,
 		approvalCancel:     approvalCancel,
+		dispatchCancel:     dispatchCancel,
 		slackApproval:      slackApproval,
 	}
 	auditVerifyContext, auditVerifyCancel := context.WithCancel(context.Background())
@@ -178,6 +190,9 @@ func (s *Server) Close() error {
 	}
 	if s.approvalCancel != nil {
 		s.approvalCancel()
+	}
+	if s.dispatchCancel != nil {
+		s.dispatchCancel()
 	}
 	if s.auditVerifyCancel != nil {
 		s.auditVerifyCancel()
