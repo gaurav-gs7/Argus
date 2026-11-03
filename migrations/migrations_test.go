@@ -47,3 +47,26 @@ func TestLoadOrdersByVersionAndChecksumsContent(t *testing.T) {
 		t.Fatalf("set=%+v", set)
 	}
 }
+
+func TestBreakingDirectiveMustPrecedeStatements(t *testing.T) {
+	cases := map[string]bool{
+		"-- argus:breaking\nALTER TABLE t DROP COLUMN c;":                    true,
+		"-- Drops a column.\n--   argus:breaking  \n\nALTER TABLE t DROP c;": true,
+		"-- Adds a column.\nALTER TABLE t ADD c INT;":                        false,
+		"ALTER TABLE t ADD c INT;\n-- argus:breaking":                        false,
+		"-- argus:breaking-ish\nSELECT 1;":                                   false,
+	}
+	for body, want := range cases {
+		set, err := Load(fstest.MapFS{"0001_x.sql": {Data: []byte(body)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if set[0].Breaking != want {
+			t.Fatalf("%q: breaking=%v want %v", body, set[0].Breaking, want)
+		}
+	}
+	all, _ := All()
+	if all[0].Breaking {
+		t.Fatal("the baseline must not be breaking")
+	}
+}

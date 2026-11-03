@@ -9,13 +9,20 @@ import (
 )
 
 type Config struct {
-	Env                        string
-	HTTPAddr                   string
-	HTTPReadHeaderTimeout      time.Duration
-	HTTPReadTimeout            time.Duration
-	HTTPWriteTimeout           time.Duration
-	HTTPIdleTimeout            time.Duration
-	PostgresDSN                string
+	Env                   string
+	HTTPAddr              string
+	HTTPReadHeaderTimeout time.Duration
+	HTTPReadTimeout       time.Duration
+	HTTPWriteTimeout      time.Duration
+	HTTPIdleTimeout       time.Duration
+	PostgresDSN           string
+	// MigrationMode is "apply" (migrate at startup) or "verify" (refuse to
+	// start until `argus-api migrate` has applied this build's migrations).
+	MigrationMode string
+	// MigrationPostgresDSN, when set, is used by `argus-api migrate`
+	// instead of PostgresDSN, so DDL privileges can stay out of the
+	// long-running processes.
+	MigrationPostgresDSN       string
 	RedisAddr                  string
 	NATSURL                    string
 	AIServiceURL               string
@@ -71,6 +78,8 @@ func Load() Config {
 		HTTPWriteTimeout:      getduration("ARGUS_HTTP_WRITE_TIMEOUT", 30*time.Second),
 		HTTPIdleTimeout:       getduration("ARGUS_HTTP_IDLE_TIMEOUT", 120*time.Second),
 		PostgresDSN:           getenv("ARGUS_POSTGRES_DSN", "postgres://argus:argus@localhost:5432/argus?sslmode=disable"),
+		MigrationMode:         strings.ToLower(getenv("ARGUS_MIGRATIONS", "apply")),
+		MigrationPostgresDSN:  getenv("ARGUS_MIGRATION_POSTGRES_DSN", ""),
 		RedisAddr:             getenv("ARGUS_REDIS_ADDR", "localhost:6379"),
 		NATSURL:               getenv("ARGUS_NATS_URL", "nats://localhost:4222"),
 		// The AI service is opt-in, and its token has no default: a
@@ -141,6 +150,9 @@ func getcsv(key string, fallback []string) []string {
 func (c Config) Validate() error {
 	if c.AIServiceURL != "" && c.AIServiceToken == "" {
 		return fmt.Errorf("ARGUS_AI_SERVICE_TOKEN must be set when ARGUS_AI_SERVICE_URL is configured")
+	}
+	if c.MigrationMode != "apply" && c.MigrationMode != "verify" {
+		return fmt.Errorf("ARGUS_MIGRATIONS must be apply or verify, got %q", c.MigrationMode)
 	}
 	return nil
 }

@@ -42,6 +42,15 @@ controlPlane:
   approvalTimeout: 15m
   approvalEscalateAfter: 10m
 
+# With separateStep, each API pod runs `argus-api migrate` as an init
+# container and the API and worker containers start with
+# ARGUS_MIGRATIONS=verify: they apply nothing and refuse to start until the
+# schema has every migration they need. Set ARGUS_MIGRATION_POSTGRES_DSN in
+# the runtime Secret to give only the migration step DDL privileges. Without
+# separateStep, the API and worker migrate at startup.
+migrations:
+  separateStep: true
+
 api:
   replicas: 1
   image:

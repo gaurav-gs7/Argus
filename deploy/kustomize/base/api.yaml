@@ -29,6 +29,22 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: migrate
+          image: ghcr.io/gaurav-gs7/argus-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: argus-control-plane
+            - secretRef:
+                name: argus-runtime
       containers:
         - name: api
           image: ghcr.io/gaurav-gs7/argus-api:0.1.0

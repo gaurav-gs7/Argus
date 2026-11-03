@@ -88,6 +88,15 @@
           }
         }
       ]
+    },
+    "migrations": {
+      "type": "object",
+      "properties": {
+        "separateStep": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "definitions": {

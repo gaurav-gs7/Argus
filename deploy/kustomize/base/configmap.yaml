@@ -6,6 +6,9 @@ data:
   ARGUS_ENV: production
   ARGUS_LOG_LEVEL: INFO
   ARGUS_HTTP_ADDR: ":8080"
+  # The API pod's migrate init container applies migrations; the API and
+  # worker only verify the schema. See docs/kubernetes.md.
+  ARGUS_MIGRATIONS: verify
   ARGUS_AI_SERVICE_URL: http://argus-ai:8090
   ARGUS_PROMETHEUS_URL: http://prometheus-operated.monitoring.svc.cluster.local:9090
   ARGUS_LOKI_URL: http://loki-gateway.monitoring.svc.cluster.local

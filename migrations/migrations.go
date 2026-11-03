@@ -7,7 +7,13 @@
 //   - never edit or renumber a file once it has been released, because the
 //     runner stores each file's SHA-256 and refuses to start on a mismatch;
 //   - each file runs in one transaction, so it must not use statements that
-//     cannot run inside one (CREATE INDEX CONCURRENTLY, VACUUM, ...).
+//     cannot run inside one (CREATE INDEX CONCURRENTLY, VACUUM, ...);
+//   - keep migrations backward compatible (add columns, tables and indexes;
+//     backfill; do not drop or rename what a released build still reads), so
+//     the previous release can keep running against the new schema during a
+//     rolling deploy or a rollback. A migration that cannot be compatible
+//     must say so with a line "-- argus:breaking" before its first
+//     statement; older builds then refuse to start against it.
 package migrations
 
 import (
@@ -19,6 +25,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 //go:embed *.sql
@@ -30,6 +37,8 @@ type Migration struct {
 	Name     string
 	SQL      string
 	Checksum string
+	// Breaking marks a migration older builds cannot run against.
+	Breaking bool
 }
 
 var fileName = regexp.MustCompile(`^(\d{4})_([a-z0-9_]+)\.sql$`)
@@ -62,7 +71,7 @@ func Load(fsys fs.FS) ([]Migration, error) {
 		}
 		version, _ := strconv.Atoi(match[1])
 		sum := sha256.Sum256(body)
-		out = append(out, Migration{Version: version, Name: match[2], SQL: string(body), Checksum: hex.EncodeToString(sum[:])})
+		out = append(out, Migration{Version: version, Name: match[2], SQL: string(body), Checksum: hex.EncodeToString(sum[:]), Breaking: declaresBreaking(string(body))})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	for i, m := range out {
@@ -74,4 +83,22 @@ func Load(fsys fs.FS) ([]Migration, error) {
 		return nil, fmt.Errorf("no migrations embedded")
 	}
 	return out, nil
+}
+
+// declaresBreaking reports whether the comment block before the first
+// statement contains "-- argus:breaking".
+func declaresBreaking(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "--") {
+			return false
+		}
+		if strings.TrimSpace(strings.TrimPrefix(line, "--")) == "argus:breaking" {
+			return true
+		}
+	}
+	return false
 }

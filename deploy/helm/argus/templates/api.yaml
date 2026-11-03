@@ -34,6 +34,22 @@ spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         {{- include "argus.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.migrations.separateStep }}
+      initContainers:
+        - name: migrate
+          image: "{{ .Values.api.image.repository }}:{{ default .Chart.AppVersion .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          args: ["migrate"]
+          securityContext:
+            {{- include "argus.containerSecurityContext" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "argus.fullname" . }}-control-plane
+            - secretRef:
+                name: {{ .Values.runtimeSecret.name }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: api
           image: "{{ .Values.api.image.repository }}:{{ default .Chart.AppVersion .Values.api.image.tag }}"

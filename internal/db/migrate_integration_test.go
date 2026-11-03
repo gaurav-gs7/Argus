@@ -240,15 +240,130 @@ func TestMigrateRefusesModifiedMigration(t *testing.T) {
 	}
 }
 
-// Rolling back to an older build after a newer one migrated must fail loudly
-// instead of running old code against a schema it does not know.
-func TestMigrateRefusesNewerSchema(t *testing.T) {
+// Rolling back to the previous release after a newer one added compatible
+// migrations must work: the older build starts and reports the newer
+// versions. A migration marked breaking must stop it instead.
+func TestOlderBuildAgainstNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	database := scratchDatabase(t)
-	if _, err := db.Apply(ctx, database, withExtra(t, `CREATE TABLE from_newer_release (id INTEGER);`)); err != nil {
+	newer := withExtra(t, `CREATE TABLE from_newer_release (id INTEGER);`)
+	if _, err := db.Apply(ctx, database, newer); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Migrate(ctx, database); !errors.Is(err, db.ErrSchemaNewer) {
-		t.Fatalf("err=%v, want ErrSchemaNewer", err)
+	report, err := db.Run(ctx, database, db.ModeApply, nil)
+	if err != nil {
+		t.Fatalf("older build refused a compatible newer schema: %v", err)
+	}
+	if len(report.Newer) != 1 || report.Newer[0] != len(newer) || len(report.Applied) != 0 {
+		t.Fatalf("report=%+v", report)
+	}
+	if _, err := db.Run(ctx, database, db.ModeVerify, nil); err != nil {
+		t.Fatalf("verify against compatible newer schema: %v", err)
+	}
+
+	breaking := withExtra(t, `CREATE TABLE from_newer_release (id INTEGER);`, `ALTER TABLE from_newer_release RENAME COLUMN id TO ident;`)
+	breaking[len(breaking)-1].Breaking = true
+	if _, err := db.Apply(ctx, database, breaking); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []db.Mode{db.ModeApply, db.ModeVerify} {
+		if _, err := db.Run(ctx, database, mode, nil); !errors.Is(err, db.ErrSchemaNewer) {
+			t.Fatalf("%s: err=%v, want ErrSchemaNewer for a breaking newer migration", mode, err)
+		}
+	}
+}
+
+// Verify mode changes nothing: it refuses to start until the migration step
+// has run, then accepts.
+func TestVerifyModeAppliesNothing(t *testing.T) {
+	ctx := context.Background()
+	database := scratchDatabase(t)
+	if _, err := db.Run(ctx, database, db.ModeVerify, nil); !errors.Is(err, db.ErrSchemaBehind) {
+		t.Fatalf("empty database: err=%v, want ErrSchemaBehind", err)
+	}
+	if tableExists(t, database, "schema_migrations") || tableExists(t, database, "incidents") {
+		t.Fatal("verify mode created schema")
+	}
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Run(ctx, database, db.ModeVerify, nil); err != nil {
+		t.Fatalf("verify after migrate: %v", err)
+	}
+	if _, err := db.Run(ctx, database, db.ModeVerify, withExtra(t, `CREATE TABLE never_applied (id INTEGER);`)); !errors.Is(err, db.ErrSchemaBehind) {
+		t.Fatalf("pending migration: err=%v, want ErrSchemaBehind", err)
+	}
+	if tableExists(t, database, "never_applied") {
+		t.Fatal("verify mode applied a pending migration")
+	}
+}
+
+// A verifying replica that starts while the migration step is running waits
+// for it rather than reading a half-migrated schema.
+func TestVerifyWaitsForRunningMigration(t *testing.T) {
+	ctx := context.Background()
+	database := scratchDatabase(t)
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := database.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext('argus_schema_migrate'))`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.Run(ctx, database, db.ModeVerify, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("verify did not wait for the migration lock (err=%v)", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := holder.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtext('argus_schema_migrate'))`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("verify still blocked after the migration finished")
+	}
+}
+
+// The previous release created schema_migrations without the breaking
+// column. This build reads it, verifies against it, and upgrades it.
+func TestReadsSchemaMigrationsFromPreviousRelease(t *testing.T) {
+	ctx := context.Background()
+	database := scratchDatabase(t)
+	baseline := embedded(t)[0]
+	for _, stmt := range []string{
+		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum CHAR(64) NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+		baseline.SQL,
+	} {
+		if _, err := database.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum) VALUES (1, $1, $2)`, baseline.Name, baseline.Checksum); err != nil {
+		t.Fatal(err)
+	}
+	if len(embedded(t)) == 1 {
+		if _, err := db.Run(ctx, database, db.ModeVerify, nil); err != nil {
+			t.Fatalf("verify against previous release's table: %v", err)
+		}
+	}
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatalf("apply against previous release's table: %v", err)
+	}
+	var breaking bool
+	if err := database.QueryRow(`SELECT breaking FROM schema_migrations WHERE version = 1`).Scan(&breaking); err != nil || breaking {
+		t.Fatalf("breaking=%v err=%v", breaking, err)
 	}
 }
