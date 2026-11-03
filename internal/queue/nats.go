@@ -64,7 +64,7 @@ func Connect(url string) (*Client, error) {
 
 // StreamConfigs are the streams Argus owns. Earlier versions also created
 // ARGUS_INCIDENTS, ARGUS_RCA and ARGUS_AUDIT, which nothing ever published
-// to; they are no longer created and can be deleted by an operator.
+// to; RetireLegacyStreams removes them.
 func StreamConfigs() []nats.StreamConfig {
 	return []nats.StreamConfig{
 		{
@@ -111,6 +111,43 @@ func (c *Client) EnsureStreams() error {
 		}
 	}
 	return nil
+}
+
+// LegacyStreams are streams earlier Argus versions created and never
+// published to.
+var LegacyStreams = []string{"ARGUS_INCIDENTS", "ARGUS_RCA", "ARGUS_AUDIT"}
+
+// LegacyStreamReport says what RetireLegacyStreams did.
+type LegacyStreamReport struct {
+	Deleted []string
+	// Kept maps a legacy stream that holds messages to its message count.
+	// Argus never wrote to these streams, so messages mean something else
+	// publishes on their subjects; they are left for an operator to decide.
+	Kept map[string]uint64
+}
+
+// RetireLegacyStreams deletes legacy streams that are empty and have no
+// consumers, and reports the ones it keeps.
+func (c *Client) RetireLegacyStreams() (LegacyStreamReport, error) {
+	report := LegacyStreamReport{Kept: map[string]uint64{}}
+	for _, name := range LegacyStreams {
+		info, err := c.js.StreamInfo(name)
+		if errors.Is(err, nats.ErrStreamNotFound) {
+			continue
+		}
+		if err != nil {
+			return report, fmt.Errorf("inspect legacy stream %s: %w", name, err)
+		}
+		if info.State.Msgs > 0 || info.State.Consumers > 0 {
+			report.Kept[name] = info.State.Msgs
+			continue
+		}
+		if err := c.js.DeleteStream(name); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
+			return report, fmt.Errorf("delete legacy stream %s: %w", name, err)
+		}
+		report.Deleted = append(report.Deleted, name)
+	}
+	return report, nil
 }
 
 // Publish stores an event on JetStream. A non-empty EventID is sent as

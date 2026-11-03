@@ -73,6 +73,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	if err := queueClient.EnsureStreams(); err != nil {
 		return nil, err
 	}
+	if retired, err := queueClient.RetireLegacyStreams(); err != nil {
+		logger.Warn("could not retire legacy JetStream streams", "error", err)
+	} else {
+		if len(retired.Deleted) > 0 {
+			logger.Info("deleted unused legacy JetStream streams", "streams", retired.Deleted)
+		}
+		for name, msgs := range retired.Kept {
+			logger.Warn("legacy JetStream stream holds messages Argus did not write; leaving it for an operator", "stream", name, "messages", msgs)
+		}
+	}
 
 	metrics := telemetry.MustRegister()
 	authenticator, err := auth.NewOIDCAuthenticator(ctx, auth.OIDCConfig{

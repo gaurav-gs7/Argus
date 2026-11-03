@@ -205,3 +205,45 @@ func TestMaxDeliveriesAdvisoryIsListedWithItsRemediation(t *testing.T) {
 	}
 	t.Fatal("max-deliveries advisory never reached the dead-letter stream")
 }
+
+// Streams older versions created and never used are deleted when empty and
+// kept, with a report, when something else has written to them.
+func TestRetireLegacyStreams(t *testing.T) {
+	client := connect(t)
+	js := client.JetStream()
+	for _, name := range queue.LegacyStreams {
+		_ = js.DeleteStream(name)
+	}
+	if report, err := client.RetireLegacyStreams(); err != nil || len(report.Deleted) != 0 || len(report.Kept) != 0 {
+		t.Fatalf("nothing to retire: %+v err=%v", report, err)
+	}
+	legacySubjects := map[string]string{"ARGUS_INCIDENTS": "incident.*", "ARGUS_RCA": "rca.*", "ARGUS_AUDIT": "audit.*"}
+	for name, subject := range legacySubjects {
+		if _, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{subject}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		for _, name := range queue.LegacyStreams {
+			_ = js.DeleteStream(name)
+		}
+	}()
+	if _, err := js.Publish("rca.someone-else", []byte("not ours")); err != nil {
+		t.Fatal(err)
+	}
+	report, err := client.RetireLegacyStreams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Deleted) != 2 || report.Kept["ARGUS_RCA"] != 1 {
+		t.Fatalf("report=%+v", report)
+	}
+	for _, name := range []string{"ARGUS_INCIDENTS", "ARGUS_AUDIT"} {
+		if _, err := js.StreamInfo(name); !errors.Is(err, nats.ErrStreamNotFound) {
+			t.Fatalf("%s still exists: %v", name, err)
+		}
+	}
+	if info, err := js.StreamInfo("ARGUS_RCA"); err != nil || info.State.Msgs != 1 {
+		t.Fatalf("a legacy stream with foreign data was touched: %v", err)
+	}
+}
