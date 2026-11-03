@@ -3,6 +3,7 @@ package queue_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -140,4 +141,67 @@ func TestEnsureStreamsAppliesRetentionToExistingStreams(t *testing.T) {
 	if len(queue.StreamConfigs()) != 2 {
 		t.Fatalf("only the remediation and dead-letter streams should be created")
 	}
+}
+
+// A worker that keeps crashing never acknowledges or dead-letters its job.
+// JetStream gives up after MaxDeliver and its advisory lands in the
+// dead-letter stream; listing resolves it back to the remediation.
+func TestMaxDeliveriesAdvisoryIsListedWithItsRemediation(t *testing.T) {
+	client := connect(t)
+	if err := client.EnsureStreams(); err != nil {
+		t.Fatal(err)
+	}
+	js := client.JetStream()
+	if err := js.PurgeStream(queue.DeadLetterStream); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	durable := "argus-crashing-" + time.Now().UTC().Format("150405000000")
+	if _, err := js.AddConsumer(queue.RemediationStream, &nats.ConsumerConfig{
+		Durable: durable, AckPolicy: nats.AckExplicitPolicy, AckWait: time.Second, MaxDeliver: 2,
+		FilterSubject: queue.RemediationSubject, DeliverPolicy: nats.DeliverNewPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = js.DeleteConsumer(queue.RemediationStream, durable) }()
+	sub, err := js.PullSubscribe(queue.RemediationSubject, durable, nats.Bind(queue.RemediationStream, durable))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remediationID := "rem_crashing_" + time.Now().UTC().Format("150405.000000000")
+	if _, err := client.Publish(ctx, queue.RemediationSubject, queue.Event{EventID: remediationID, Payload: map[string]any{"remediation_id": remediationID}}); err != nil {
+		t.Fatal(err)
+	}
+	for delivery := 0; delivery < 2; delivery++ {
+		if _, err := sub.Fetch(1, nats.MaxWait(3*time.Second)); err != nil {
+			t.Fatalf("delivery %d: %v", delivery+1, err) // fetched, never acked: the worker "crashed"
+		}
+	}
+	// JetStream decides it has hit MaxDeliver when the ack wait of the last
+	// delivery expires and a pull is waiting for the next message.
+	go func() { _, _ = sub.Fetch(1, nats.MaxWait(4*time.Second)) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		letters, err := client.ListDeadLetters(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, letter := range letters {
+			if letter.Kind == queue.DeadLetterAdvisory && letter.RemediationID == remediationID {
+				if letter.Reason != "max_deliveries" || letter.Deliveries != 2 || letter.OriginalStream != queue.RemediationStream {
+					t.Fatalf("advisory=%+v", letter)
+				}
+				if err := client.DeleteDeadLetter(ctx, letter.Sequence); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.GetDeadLetter(ctx, letter.Sequence); !errors.Is(err, queue.ErrDeadLetterNotFound) {
+					t.Fatalf("deleted dead letter still readable: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatal("max-deliveries advisory never reached the dead-letter stream")
 }

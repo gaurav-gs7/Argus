@@ -36,6 +36,9 @@ const (
 	PermissionViewAudit          Permission = "view_audit"
 	PermissionManageService      Permission = "manage_service"
 	PermissionReindexRunbook     Permission = "reindex_runbook"
+	// PermissionManageDeadLetters lists, replays and discards dead-lettered
+	// remediation jobs. No role but admin has it.
+	PermissionManageDeadLetters Permission = "manage_dead_letters"
 )
 
 type Principal struct {

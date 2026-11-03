@@ -29,6 +29,7 @@ func main() {
 		scenarioCmd(&baseURL, &token),
 		runbookCmd(&baseURL, &token),
 		auditCmd(&baseURL, &token),
+		deadLetterCmd(&baseURL, &token),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -53,6 +54,40 @@ func auditCmd(baseURL, token *string) *cobra.Command {
 				return printRequest(http.MethodGet, *baseURL+"/v1/audit/verify", nil, *token)
 			},
 		},
+	)
+	return cmd
+}
+
+func deadLetterCmd(baseURL, token *string) *cobra.Command {
+	cmd := &cobra.Command{Use: "deadletter", Short: "Inspect, replay or discard dead-lettered remediation jobs (admin)"}
+	var limit int
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List dead letters with their remediation status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return printRequest(http.MethodGet, fmt.Sprintf("%s/v1/dead-letters?limit=%d", *baseURL, limit), nil, *token)
+		},
+	}
+	list.Flags().IntVar(&limit, "limit", 50, "Maximum dead letters to list (1-500)")
+	action := func(name, short string) *cobra.Command {
+		var reason string
+		sub := &cobra.Command{
+			Use:   name + " <sequence>",
+			Short: short,
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if strings.TrimSpace(reason) == "" {
+					return fmt.Errorf("--reason is required")
+				}
+				return printRequest(http.MethodPost, *baseURL+"/v1/dead-letters/"+args[0]+"/"+name, map[string]any{"reason": reason}, *token)
+			},
+		}
+		sub.Flags().StringVar(&reason, "reason", "", "Why (recorded in the audit ledger)")
+		return sub
+	}
+	cmd.AddCommand(list,
+		action("replay", "Re-send the job of a still-queued remediation and remove the dead letter"),
+		action("discard", "Remove a dead letter after triage"),
 	)
 	return cmd
 }

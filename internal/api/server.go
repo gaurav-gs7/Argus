@@ -45,6 +45,7 @@ type Server struct {
 	approvalService    *approvals.Service
 	approvalCancel     context.CancelFunc
 	dispatchCancel     context.CancelFunc
+	deadLetterQueue    deadLetterQueue
 	auditVerifyCancel  context.CancelFunc
 	slackApproval      *approvals.SlackWorkflow
 }
@@ -224,6 +225,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/approval-callbacks/slack", s.handleSlackApprovalCallback)
 	mux.HandleFunc("/v1/audit", s.handleAudit)
 	mux.HandleFunc("/v1/audit/verify", s.handleAuditVerify)
+	mux.HandleFunc("/v1/dead-letters", s.handleDeadLetters)
+	mux.HandleFunc("/v1/dead-letters/", s.handleDeadLetterRoutes)
 	mux.HandleFunc("/v1/services", s.handleServices)
 	mux.HandleFunc("/v1/topology", s.handleTopology)
 	mux.HandleFunc("/v1/topology/dependencies", s.handleTopologyDependencies)
@@ -1019,6 +1022,8 @@ func requiredPermission(r *http.Request) auth.Permission {
 		}
 	case path == "/v1/audit" || path == "/v1/audit/verify":
 		return auth.PermissionViewAudit
+	case path == "/v1/dead-letters" || strings.HasPrefix(path, "/v1/dead-letters/"):
+		return auth.PermissionManageDeadLetters
 	case path == "/v1/services" && method == http.MethodGet:
 		return auth.PermissionView
 	case path == "/v1/services" && method == http.MethodPost:
