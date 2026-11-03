@@ -18,7 +18,10 @@
 - idempotency keys prevent duplicate execution
 - action parameters are part of proposal deduplication and idempotency identity
 - durable execution receipts make JetStream replay safe
+- the job is written to a PostgreSQL outbox in the same transaction as the queue reservation, so a crash or JetStream outage cannot strand a queued remediation without its job
 - each job is published once per reservation (`Nats-Msg-Id`), retried with backoff on infrastructure errors, bounded by `ARGUS_WORKER_MAX_DELIVER`, and dead-lettered to `ARGUS_DEAD_LETTER` when malformed or exhausted
+- a queued remediation no worker ran is re-sent by the reconciler up to `ARGUS_MAX_REDISPATCHES` times, then marked `timed_out` rather than running late
+- admins list, replay, or discard dead letters (`argus deadletter ...`); replay only re-sends a still-queued remediation, and both actions are audited
 - a job that exceeds `ARGUS_WORKER_JOB_TIMEOUT` is marked `timed_out` instead of retried, and a worker runs at most `ARGUS_WORKER_CONCURRENCY` jobs at once
 
 ## Approved V1 Actions
@@ -62,4 +65,4 @@ Notification delivery never grants authority. Generic webhooks only carry the bo
 
 Defaults are intentionally laptop-friendly: one goroutine sweeps every 15 seconds, no extra container is required, and an empty webhook URL leaves requests queryable through the API/CLI. For a generic webhook, set `ARGUS_APPROVAL_WEBHOOK_SECRET` so receivers can verify `X-Argus-Signature-256`. Slack uses a free incoming webhook plus a free Slack app for signed interactivity; it does not add a local service.
 
-These controls bound what v1 can execute; they do not make queue publication or external side effects atomic with PostgreSQL. See [Threat Model And Explicit Limitations](threat-model.md) for the crash-window and policy-coverage matrix.
+These controls bound what v1 can execute; they do not make external side effects atomic with PostgreSQL. See [Threat Model And Explicit Limitations](threat-model.md) for the crash-window and policy-coverage matrix.

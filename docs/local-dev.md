@@ -31,7 +31,9 @@ Running `argus-api` outside Compose leaves the AI service off unless `ARGUS_AI_S
 
 ## Schema Migrations
 
-The schema lives in `migrations/NNNN_name.sql`, embedded in the API and worker binaries. Both apply pending migrations at startup under one PostgreSQL advisory lock, each file in its own transaction, and record them in `schema_migrations` with a SHA-256 checksum. To change the schema, add the next numbered file; never edit or renumber a released one, because startup fails if an applied file's checksum changes or if the database has a migration the binary does not know (an older build against a newer schema). Files must not contain statements that cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`. A database created before migrations were tracked is adopted by `0001_baseline.sql`, which is idempotent.
+The schema lives in `migrations/NNNN_name.sql`, embedded in the API and worker binaries. By default (`ARGUS_MIGRATIONS=apply`) both apply pending migrations at startup under one PostgreSQL advisory lock, each file in its own transaction, and record them in `schema_migrations` with a SHA-256 checksum. With `ARGUS_MIGRATIONS=verify` they apply nothing and refuse to start until `argus-api migrate` (which honours `ARGUS_MIGRATION_POSTGRES_DSN`) has run; Kubernetes uses that split.
+
+To change the schema, add the next numbered file; never edit or renumber a released one, because startup fails if an applied file's checksum changes. Keep migrations backward compatible (add columns, tables and indexes, backfill; do not drop or rename what the previous release reads) so the previous release can run against the new schema during a rollout or rollback. If a migration cannot be compatible, put `-- argus:breaking` before its first statement: older builds then refuse to start against it. Files must not contain statements that cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`. A database created before migrations were tracked is adopted by `0001_baseline.sql`, which is idempotent.
 
 ## Recommended LLM Modes
 

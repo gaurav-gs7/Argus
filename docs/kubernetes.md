@@ -14,6 +14,12 @@ Argus uses Docker Compose for supported local development. The Kubernetes packag
 - Prometheus annotations in Kustomize and an optional `ServiceMonitor` in Helm
 - CI linting and deterministic rendering
 
+## Schema Migrations
+
+Both renderers run `argus-api migrate` as an init container on each API pod and start the API and worker with `ARGUS_MIGRATIONS=verify`. A pod therefore never serves traffic against a schema it does not know: the init container applies pending migrations under a PostgreSQL advisory lock (concurrent pods serialize), and verifying processes wait on the same lock and exit if a migration they need is still missing. Put a DDL-capable role in `ARGUS_MIGRATION_POSTGRES_DSN` in the runtime Secret to keep those privileges out of the long-running containers; without it, migrations use `ARGUS_POSTGRES_DSN`.
+
+Migrations are backward compatible by default, so during a rolling update, and after `helm rollback`, the previous release keeps running against the newer schema and logs which migrations it does not know. A migration marked `-- argus:breaking` makes older pods refuse to start. Helm users can return to migrate-at-startup with `migrations.separateStep=false`.
+
 ## Deliberate Boundaries
 
 The manifests do not install stateful or organization-owned dependencies. A target platform must provide:
@@ -85,5 +91,5 @@ CI proves chart linting and deterministic manifest generation, not cluster compa
 3. external secret integration
 4. backup/restore and JetStream recovery exercises
 5. load, disruption, rollback, and network-policy tests
-6. a dedicated migration job; today the API and worker apply the embedded, checksummed migrations at startup under an advisory lock, and an older release refuses to start against a newer schema, so releases must ship backward-compatible (expand, then contract) migrations
+6. a policy for breaking migrations: compatible migrations (the default) let the previous release keep running during a rolling update or a rollback, but a migration marked `-- argus:breaking` stops older pods, so it needs a maintenance window or a two-release expand/contract
 

@@ -28,6 +28,9 @@ Core endpoints:
 - `POST /v1/approval-callbacks/slack` (public transport endpoint; Slack HMAC verification is mandatory)
 - `GET /v1/audit`
 - `GET /v1/audit/verify` (admin-only full hash-chain verification)
+- `GET /v1/dead-letters` (admin)
+- `POST /v1/dead-letters/{sequence}/replay` (admin)
+- `POST /v1/dead-letters/{sequence}/discard` (admin)
 - `GET /v1/services`
 - `POST /v1/services`
 - `GET /v1/topology`
@@ -98,7 +101,19 @@ Approval decision body:
 
 The actor is derived from the verified OIDC token's issuer and subject. Signature, issuer, audience, expiry, signing algorithm, and role mapping are validated before authorization. `reason` is required, a proposer cannot decide their own request by default, and replayed or expired decisions fail closed.
 
-Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution: the remediation is reserved as `queued` and published to JetStream, and a worker runs it asynchronously. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
+Remediation execution returns `202 {"status":"queued"}` for a newly accepted execution: the remediation is reserved as `queued` and its job written to the outbox in one transaction, then published to JetStream, and a worker runs it asynchronously. If JetStream is unavailable the request still returns `202`; the job stays in the outbox and is published when JetStream recovers.
+
+## Dead Letters
+
+Jobs a worker gives up on, and JetStream's max-deliveries advisories for jobs that were never acknowledged, are kept in `ARGUS_DEAD_LETTER` for 30 days. These routes need the `manage_dead_letters` permission, which only `admin` holds.
+
+`GET /v1/dead-letters?limit=50` lists them oldest first with `sequence`, `kind` (`job` or `max_deliveries_advisory`), `reason`, `deliveries`, `remediation_id`, the remediation's current `remediation_status`, and `replayable`.
+
+`POST /v1/dead-letters/{sequence}/replay` with `{"reason": "..."}` re-sends the job of a remediation that is still `queued` through the outbox (audited as `remediation.redispatched`), deletes the dead letter, and returns `202` with the `dispatch_id`. It returns `409` with the remediation status when the remediation has moved on, and `422` when the dead letter names no remediation.
+
+`POST /v1/dead-letters/{sequence}/discard` with `{"reason": "..."}` records `remediation.dead_letter_discarded` and then deletes the dead letter.
+
+The CLI equivalents are `argus deadletter list`, `argus deadletter replay <sequence> --reason ...`, and `argus deadletter discard <sequence> --reason ...`. Repeating the request for a queued, running, or succeeded remediation returns `200 {"status":"reused"}`; Argus does not enqueue the typed action again and records the idempotent reuse in the audit trail.
 
 Parameterized actions carry immutable desired state through proposal, policy, approval notification, audit, worker execution, and optional Helios delegation:
 
