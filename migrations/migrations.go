@@ -25,7 +25,6 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 )
 
 //go:embed *.sql
@@ -88,17 +87,5 @@ func Load(fsys fs.FS) ([]Migration, error) {
 // declaresBreaking reports whether the comment block before the first
 // statement contains "-- argus:breaking".
 func declaresBreaking(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "--") {
-			return false
-		}
-		if strings.TrimSpace(strings.TrimPrefix(line, "--")) == "argus:breaking" {
-			return true
-		}
-	}
-	return false
+	return declares(body, "argus:breaking")
 }
