@@ -51,6 +51,9 @@
             "roleMappings": {
               "type": "string",
               "minLength": 1
+            },
+            "jwksURL": {
+              "type": "string"
             }
           }
         }

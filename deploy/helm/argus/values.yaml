@@ -29,6 +29,9 @@ controlPlane:
     audience: argus-api
     roleClaim: realm_access.roles
     roleMappings: argus-admin=admin,argus-operator=operator,argus-viewer=viewer,argus-ingester=ingester
+    # Optional. When set, keys come from this JWKS URL and the issuer's
+    # discovery document is not fetched at startup.
+    jwksURL: ""
   aiServiceURL: ""
   # RCA corroboration backends. Empty disables that backend; RCA then stays
   # at the alert-only confidence bound for probes it cannot run.

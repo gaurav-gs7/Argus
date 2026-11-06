@@ -13,12 +13,19 @@ data:
   ARGUS_OIDC_AUDIENCE: {{ required "controlPlane.oidc.audience is required" .Values.controlPlane.oidc.audience | quote }}
   ARGUS_OIDC_ROLE_CLAIM: {{ .Values.controlPlane.oidc.roleClaim | quote }}
   ARGUS_OIDC_ROLE_MAPPINGS: {{ .Values.controlPlane.oidc.roleMappings | quote }}
+  {{- with .Values.controlPlane.oidc.jwksURL }}
+  ARGUS_OIDC_JWKS_URL: {{ . | quote }}
+  {{- end }}
   ARGUS_REMEDIATION_EXECUTOR: {{ .Values.controlPlane.remediationExecutor | quote }}
   ARGUS_HELIOS_BASE_URL: {{ .Values.controlPlane.heliosBaseURL | quote }}
   ARGUS_APPROVAL_CALLBACK_BASE_URL: {{ .Values.controlPlane.approvalCallbackBaseURL | quote }}
   ARGUS_APPROVAL_TIMEOUT: {{ .Values.controlPlane.approvalTimeout | quote }}
   ARGUS_APPROVAL_ESCALATE_AFTER: {{ .Values.controlPlane.approvalEscalateAfter | quote }}
+  {{- if .Values.ai.enabled }}
   ARGUS_AI_SERVICE_URL: {{ default (printf "http://%s-ai:%v" (include "argus.fullname" .) .Values.ai.service.port) .Values.controlPlane.aiServiceURL | quote }}
+  {{- else }}
+  ARGUS_AI_SERVICE_URL: {{ .Values.controlPlane.aiServiceURL | quote }}
+  {{- end }}
   ARGUS_PROMETHEUS_URL: {{ .Values.controlPlane.evidence.prometheusURL | quote }}
   ARGUS_LOKI_URL: {{ .Values.controlPlane.evidence.lokiURL | quote }}
   ARGUS_RCA_PROBE_TIMEOUT: {{ .Values.controlPlane.evidence.probeTimeout | quote }}

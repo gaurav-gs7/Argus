@@ -1,0 +1,71 @@
+# Disposable PostgreSQL and NATS JetStream for the kind end-to-end test. Not
+# for any real environment: no persistence, fixed credentials.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argus
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: argus
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - {name: POSTGRES_USER, value: argus}
+            - {name: POSTGRES_PASSWORD, value: argus}
+            - {name: POSTGRES_DB, value: argus}
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "argus", "-d", "argus"]}
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: argus
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: argus
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: nats}
+  template:
+    metadata:
+      labels: {app: nats}
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.11-alpine
+          args: ["-js", "-m", "8222"]
+          ports: [{containerPort: 4222}, {containerPort: 8222}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8222}
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: argus
+spec:
+  selector: {app: nats}
+  ports: [{port: 4222, targetPort: 4222}]

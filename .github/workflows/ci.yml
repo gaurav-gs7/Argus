@@ -136,6 +136,34 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans
 
+  kubernetes-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.17.3
+      - uses: helm/kind-action@v1
+        with:
+          version: v0.27.0
+          kubectl_version: v1.32.3
+          cluster_name: argus
+      - name: Build and load images
+        run: |
+          docker build -f Dockerfile.api -t argus-api:e2e .
+          docker build -f Dockerfile.worker -t argus-worker:e2e .
+          kind load docker-image argus-api:e2e argus-worker:e2e --name argus
+      - name: Deploy disposable PostgreSQL and NATS
+        run: kubectl apply -f deploy/kind/dependencies.yaml
+      - name: Install, migrate, upgrade, roll back, and check schema compatibility
+        run: ./scripts/test-k8s-e2e.sh
+      - name: Show cluster state on failure
+        if: failure()
+        run: |
+          kubectl -n argus get pods -o wide || true
+          kubectl -n argus describe pods || true
+          for d in argus-api argus-worker; do kubectl -n argus logs deploy/$d --all-containers --tail=100 || true; done
+
   helios-integration:
     runs-on: ubuntu-latest
     services:

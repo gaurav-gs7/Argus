@@ -1,0 +1,35 @@
+# Values for the kind end-to-end test (scripts/test-k8s-e2e.sh). Images are
+# built locally and loaded into the cluster.
+runtimeSecret:
+  name: argus-runtime
+
+global:
+  environment: production
+
+controlPlane:
+  oidc:
+    issuerURL: https://issuer.example.test
+    audience: argus-ci
+    # Not contacted at startup; no token is verified in this test.
+    jwksURL: https://issuer.example.test/jwks
+
+api:
+  replicas: 2
+  image:
+    repository: argus-api
+    tag: e2e
+    pullPolicy: Never
+
+worker:
+  replicas: 1
+  image:
+    repository: argus-worker
+    tag: e2e
+    pullPolicy: Never
+
+ai:
+  enabled: false
+
+monitoring:
+  serviceMonitor:
+    enabled: false
