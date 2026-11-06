@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -12,20 +11,15 @@ import (
 
 	"github.com/gauravgs7/argus/internal/audit"
 	"github.com/gauravgs7/argus/internal/db"
+	"github.com/gauravgs7/argus/internal/testutil"
 )
 
 func TestAuditLedgerBackfillConcurrencyAppendOnlyAndTamperDetection(t *testing.T) {
-	dsn := os.Getenv("ARGUS_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("ARGUS_TEST_POSTGRES_DSN is not set")
-	}
+	// The test needs a database with a legacy audit table and nothing else,
+	// so it gets its own instead of depending on running first.
+	database := testutil.ScratchDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	database, err := db.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open postgres: %v", err)
-	}
-	defer database.Close()
 
 	createLegacyAuditTable(t, database)
 	if _, err := database.ExecContext(ctx, `
