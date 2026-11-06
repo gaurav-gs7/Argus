@@ -42,7 +42,11 @@ integration-test:
 		go test -race -count=1 ./internal/audit ./internal/db ./migrations; \
 		ARGUS_TEST_POSTGRES_DSN='postgres://argus:argus@127.0.0.1:55432/argus?sslmode=disable' \
 		ARGUS_TEST_NATS_URL='nats://127.0.0.1:54222' \
-		go test -race -count=1 -p 1 ./internal/incidents ./internal/queue ./internal/workers ./internal/rca ./internal/remediation ./internal/api
+		go test -race -count=1 -p 1 ./internal/incidents ./internal/queue ./internal/workers ./internal/rca ./internal/remediation ./internal/api; \
+		ARGUS_TEST_POSTGRES_DSN='postgres://argus:argus@127.0.0.1:55432/argus?sslmode=disable' \
+		ARGUS_TEST_NATS_URL='nats://127.0.0.1:54222' \
+		ARGUS_GO_TOTAL_COVERAGE_MIN=50.0 ARGUS_GO_DECISION_CORE_COVERAGE_MIN=75.0 \
+		./scripts/check-go-coverage.sh
 
 oidc-test:
 	./scripts/test-oidc-e2e.sh

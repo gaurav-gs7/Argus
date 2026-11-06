@@ -45,13 +45,23 @@ enforce_floor() {
   printf 'Coverage gate passed: %s is %s%% (minimum %s%%).\n' "${label}" "${actual}" "${minimum}"
 }
 
+# With ARGUS_TEST_POSTGRES_DSN set (make integration-coverage), the database
+# and JetStream tests run too, so the outbox, reconcilers and worker paths
+# that only those tests can exercise count toward the gate. Those tests share
+# one database, so packages run one at a time.
+PARALLEL=()
+if [[ -n "${ARGUS_TEST_POSTGRES_DSN:-}" ]]; then
+  PARALLEL=(-p 1)
+  echo "Integration services configured: coverage includes PostgreSQL/JetStream tests."
+fi
+
 echo "Running repository-wide Go coverage..."
-go test -count=1 -covermode=atomic -coverprofile="${TOTAL_PROFILE}" ./...
+go test -count=1 "${PARALLEL[@]}" -covermode=atomic -coverprofile="${TOTAL_PROFILE}" ./...
 TOTAL_COVERAGE="$(coverage_total "${TOTAL_PROFILE}")"
 enforce_floor "all Go statements" "${TOTAL_COVERAGE}" "${TOTAL_MINIMUM}"
 
 echo "Running deterministic decision-core Go coverage..."
-go test -count=1 -covermode=atomic -coverprofile="${CORE_PROFILE}" "${CORE_PACKAGES[@]}"
+go test -count=1 "${PARALLEL[@]}" -covermode=atomic -coverprofile="${CORE_PROFILE}" "${CORE_PACKAGES[@]}"
 CORE_COVERAGE="$(coverage_total "${CORE_PROFILE}")"
 enforce_floor "decision-core statements" "${CORE_COVERAGE}" "${CORE_MINIMUM}"
 

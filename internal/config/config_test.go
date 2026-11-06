@@ -63,3 +63,22 @@ func TestRunningStaleAfterMustExceedTheJobTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNumericAndBooleanSettingsFallBackOnBadValues(t *testing.T) {
+	t.Setenv("ARGUS_WORKER_CONCURRENCY", "not-a-number")
+	t.Setenv("ARGUS_MAX_REDISPATCHES", "-2")
+	t.Setenv("ARGUS_APPROVAL_ALLOW_SELF_APPROVAL", "maybe")
+	cfg := Load()
+	if cfg.WorkerConcurrency != 4 || cfg.MaxRedispatches != 3 || cfg.ApprovalAllowSelf {
+		t.Fatalf("bad values were not ignored: %d %d %v", cfg.WorkerConcurrency, cfg.MaxRedispatches, cfg.ApprovalAllowSelf)
+	}
+	t.Setenv("ARGUS_WORKER_CONCURRENCY", "9")
+	t.Setenv("ARGUS_APPROVAL_ALLOW_SELF_APPROVAL", "yes")
+	if cfg := Load(); cfg.WorkerConcurrency != 9 || !cfg.ApprovalAllowSelf {
+		t.Fatalf("good values were not read: %d %v", cfg.WorkerConcurrency, cfg.ApprovalAllowSelf)
+	}
+	t.Setenv("ARGUS_APPROVAL_ALLOW_SELF_APPROVAL", "0")
+	if Load().ApprovalAllowSelf {
+		t.Fatal("0 should disable self approval")
+	}
+}

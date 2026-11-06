@@ -170,3 +170,30 @@ func TestValidateRulesRejectsBrokenTables(t *testing.T) {
 		}
 	}
 }
+
+// A candidate's target comes from the alert, and is refused when the alert
+// does not carry a safe one.
+func TestCandidateTemplateRender(t *testing.T) {
+	if len(New().Rules()) == 0 {
+		t.Fatal("no rules")
+	}
+	pod := CandidateTemplate{ActionType: "restart_pod", TargetLabel: "pod", FallbackToService: true, TargetFormat: "local/%s"}
+	if target, _, reason := pod.Render("payments-api", map[string]string{"pod": "payments-api-0"}); target != "local/payments-api-0" || reason != "" {
+		t.Fatalf("pod label: %q %q", target, reason)
+	}
+	if target, _, reason := pod.Render("payments-api", nil); target != "local/payments-api" || reason != "" {
+		t.Fatalf("service fallback: %q %q", target, reason)
+	}
+	strict := CandidateTemplate{ActionType: "purge_cache", TargetLabel: "cache_key_pattern", Parameters: map[string]any{"max_keys": 500}}
+	if target, _, reason := strict.Render("payments-api", nil); target != "" || reason == "" {
+		t.Fatalf("missing label must not derive a target: %q %q", target, reason)
+	}
+	if target, _, reason := strict.Render("payments-api", map[string]string{"cache_key_pattern": "*"}); target != "" || reason == "" {
+		t.Fatalf("an unbounded cache pattern was accepted: %q %q", target, reason)
+	}
+	params := map[string]any{"max_keys": 500}
+	target, got, reason := strict.Render("svc", map[string]string{"cache_key_pattern": "demo:pressure:*"})
+	if reason != "" || target == "" || got["max_keys"] != params["max_keys"] {
+		t.Fatalf("valid cache pattern: %q %v %q", target, got, reason)
+	}
+}
