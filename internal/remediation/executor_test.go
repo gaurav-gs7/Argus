@@ -86,8 +86,8 @@ func TestHeliosExecutorExecute(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected task to be an object, got %#v", tasks[0])
 	}
-	if task["task_type"] != "persist_artifact" {
-		t.Fatalf("expected persist_artifact task type, got %#v", task["task_type"])
+	if task["task_type"] != "write_artifact" {
+		t.Fatalf("expected Helios's write_artifact task type, got %#v", task["task_type"])
 	}
 	metadata, ok := submitted["metadata"].(map[string]any)
 	if !ok || metadata["parameters"] != `{"strategy":"bounded"}` {

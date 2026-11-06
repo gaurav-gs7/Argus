@@ -2,6 +2,9 @@ package remediation
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,4 +87,67 @@ func TestOnlyQueuedAndRunningRemediationsAreDispatchable(t *testing.T) {
 			t.Fatalf("Dispatchable(%s) != %v", state, want)
 		}
 	}
+}
+
+func TestHeliosReconcileConfigDefaults(t *testing.T) {
+	got := HeliosReconcileConfig{MaxRuntime: time.Hour}.withDefaults()
+	def := DefaultHeliosReconcileConfig()
+	if got.MaxRuntime != time.Hour || got.Interval != def.Interval || got.SubmitLostAfter != def.SubmitLostAfter {
+		t.Fatalf("cfg=%+v", got)
+	}
+}
+
+// The reconciler finds a lost submission by its Argus labels among Helios's
+// newest workflows, and cancels overdue ones; Helios errors surface.
+func TestHeliosLookupAndCancel(t *testing.T) {
+	var cancelled []string
+	executor := NewHeliosExecutor("http://helios.local", "admin-token", time.Second)
+	executor.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer admin-token" {
+			return jsonResponse(http.StatusUnauthorized, map[string]string{"error": "unauthorized"}), nil
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workflows" && r.URL.Query().Get("limit") == "500":
+			return jsonResponse(http.StatusOK, map[string]any{"workflows": []map[string]any{
+				{"workflow_id": "wf_9", "state": "running", "labels": map[string]string{"source": "someone-else", "remediation_id": "rem_1"}},
+				{"workflow_id": "wf_8", "state": "succeeded", "labels": map[string]string{"source": "argus", "remediation_id": "rem_1"}},
+				{"workflow_id": "wf_7", "state": "failed", "labels": map[string]string{"source": "argus", "remediation_id": "rem_1"}},
+			}}), nil
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/workflows/"), "/cancel")
+			if id == "wf_missing" {
+				return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "no such workflow"}), nil
+			}
+			cancelled = append(cancelled, id)
+			return jsonResponse(http.StatusAccepted, map[string]string{"status": "cancelled"}), nil
+		}
+		return nil, fmt.Errorf("unexpected %s %s", r.Method, r.URL)
+	})}
+	ctx := context.Background()
+	found, err := executor.findWorkflow(ctx, "rem_1")
+	if err != nil || found == nil || found.WorkflowID != "wf_8" || found.State != "succeeded" {
+		t.Fatalf("found=%+v err=%v (want the newest Argus-labelled workflow)", found, err)
+	}
+	if none, err := executor.findWorkflow(ctx, "rem_2"); err != nil || none != nil {
+		t.Fatalf("unknown remediation: %+v %v", none, err)
+	}
+	if err := executor.cancelWorkflow(ctx, "wf_8"); err != nil || len(cancelled) != 1 {
+		t.Fatalf("cancel: %v %v", err, cancelled)
+	}
+	if err := executor.cancelWorkflow(ctx, "wf_missing"); err == nil {
+		t.Fatal("a failed cancel was reported as success")
+	}
+	executor.adminToken = "wrong"
+	if _, err := executor.findWorkflow(ctx, "rem_1"); err == nil {
+		t.Fatal("an unauthorized list was reported as success")
+	}
+}
+
+// Reconciling Helios is a no-op for other executors.
+func TestReconcileHeliosIgnoresOtherExecutors(t *testing.T) {
+	s := NewService(nil, nil, nil, nil, NewLocalExecutor(), nil, nil)
+	if result, err := s.ReconcileHelios(context.Background(), HeliosReconcileConfig{}); err != nil || len(result.Errors) != 0 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	s.RunHeliosReconciler(context.Background(), HeliosReconcileConfig{}, nil) // returns at once
 }

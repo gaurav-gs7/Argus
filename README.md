@@ -58,7 +58,7 @@ Argus can delegate approved remediation execution to an external Helios control 
 - `ARGUS_HELIOS_BASE_URL` points at the Helios API
 - `ARGUS_HELIOS_ADMIN_TOKEN` authenticates workflow submission and status reads
 
-In the current bridge, Argus submits a trusted Helios `persist_artifact` workflow that records the remediation intent and execution metadata using Helios's durable execution path. This is intentional: Helios is now integrated as a real execution backend, while action-specific Helios remediation handlers can be added later without changing Argus policy or incident logic.
+In the current bridge, Argus submits a Helios workflow whose single task uses Helios's built-in `write_artifact` handler with the `manifest` sink, which records the remediation intent and execution metadata using Helios's durable execution path. This is intentional: Helios is now integrated as a real execution backend, while action-specific Helios remediation handlers can be added later without changing Argus policy or incident logic.
 
 ## Architecture
 

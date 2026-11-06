@@ -16,7 +16,7 @@ Argus can dispatch approved remediations to an external Helios control plane ins
 - Argus remains authoritative for policy, approval, tamper-evident audit, and incident state
 - OIDC verifies signed user identity; Argus maps trusted role claims into local permissions
 - Helios becomes the execution backend for delegated remediation workflows
-- The current integration uses Helios's trusted `persist_artifact` workflow path as a safe simulated execution backend
+- The current integration uses Helios's built-in `write_artifact` handler (manifest sink) as a safe simulated execution backend
 - Future Helios remediation-specific task types can replace this workflow mapping without changing Argus's control-plane contracts
 
 ## Deterministic Path

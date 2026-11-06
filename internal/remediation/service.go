@@ -395,8 +395,10 @@ func (s *Service) applyQueuedOutcome(ctx context.Context, remediation incidents.
 		return nil
 	case StateRunning:
 		entry.Action = "remediation.running"
+		// Persist the executor's result (for Helios, the workflow id) so the
+		// reconciler can follow the workflow to its final state.
 		return s.store.InTx(ctx, func(tx *incidents.Store) error {
-			if err := requireApplied(tx.ClaimRemediation(ctx, remediation.ID)); err != nil {
+			if err := requireApplied(tx.MarkRemediationRunning(ctx, remediation.ID, outcome.Result)); err != nil {
 				return err
 			}
 			return audit.WriteTx(ctx, tx.Tx(), entry)

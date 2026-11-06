@@ -958,6 +958,22 @@ func (s *Store) ClaimRemediation(ctx context.Context, remediationID string) (boo
 	return affectedOne(result)
 }
 
+// MarkRemediationRunning moves a queued (or already running) remediation to
+// running and records what the executor reported so far, such as the Helios
+// workflow to follow up on.
+func (s *Store) MarkRemediationRunning(ctx context.Context, remediationID string, result map[string]any) (bool, error) {
+	resultJSON, _ := json.Marshal(result)
+	res, err := s.q.ExecContext(ctx, `
+		UPDATE remediation_actions
+		SET status = 'running', started_at = COALESCE(started_at, now()), result = $2
+		WHERE id = $1 AND status IN ('queued', 'running')
+	`, remediationID, resultJSON)
+	if err != nil {
+		return false, fmt.Errorf("mark remediation running: %w", err)
+	}
+	return affectedOne(res)
+}
+
 // CompleteRemediation records a terminal outcome for a queued or running
 // remediation. It returns false, and changes nothing, if the action already
 // reached another state.

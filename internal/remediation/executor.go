@@ -124,7 +124,7 @@ func (e *HeliosExecutor) Execute(ctx context.Context, remediation incidents.Reme
 		"helios_workflow_name":  summary.Name,
 		"helios_workflow_state": summary.State,
 		"dry_run":               dryRun,
-		"delegated_task_type":   "persist_artifact",
+		"delegated_task_type":   heliosTaskType,
 	}
 	if summary.Metadata != nil {
 		result["helios_metadata"] = summary.Metadata
@@ -139,6 +139,14 @@ func (e *HeliosExecutor) Execute(ctx context.Context, remediation incidents.Reme
 		return ExecutionOutcome{Status: "running", Result: result}, nil
 	}
 }
+
+// heliosTaskType is the Helios built-in handler Argus delegates to. Helios
+// registers validate_payload, transform_records, model_inference,
+// aggregate_metrics, write_artifact and notify_webhook; it has no
+// persist_artifact handler, which this bridge used to submit, so no Helios
+// worker ever picked those tasks up. The "manifest" sink records the
+// remediation intent (keyed by the idempotency key) without writing files.
+const heliosTaskType = "write_artifact"
 
 type heliosWorkflowSummary struct {
 	WorkflowID string            `json:"workflow_id"`
@@ -216,7 +224,7 @@ func (e *HeliosExecutor) workflowSpec(remediation incidents.RemediationAction, i
 		"tasks": []map[string]any{
 			{
 				"task_id":                   "record-remediation-execution",
-				"task_type":                 "persist_artifact",
+				"task_type":                 heliosTaskType,
 				"timeout_seconds":           15,
 				"priority":                  90,
 				"cpu_units":                 200,
@@ -230,7 +238,7 @@ func (e *HeliosExecutor) workflowSpec(remediation incidents.RemediationAction, i
 					"multiplier":              2,
 				},
 				"input_payload": map[string]any{
-					"sink":    "argus://helios-remediation-executor",
+					"sink":    "manifest",
 					"dataset": "argus_remediation_actions",
 					"artifact": map[string]any{
 						"incident_id":      incident.ID,

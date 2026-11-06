@@ -172,6 +172,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		remediationService.UseDispatcher(dispatcher)
 		go dispatcher.Run(dispatchContext)
 	}
+	if cfg.RemediationExecutor == "helios" {
+		go remediationService.RunHeliosReconciler(dispatchContext, remediation.HeliosReconcileConfig{
+			MaxRuntime:      cfg.HeliosMaxRuntime,
+			SubmitLostAfter: cfg.HeliosSubmitLostAfter,
+		}, logger)
+	}
 
 	server := &Server{
 		cfg:                cfg,

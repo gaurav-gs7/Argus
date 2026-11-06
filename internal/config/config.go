@@ -50,6 +50,8 @@ type Config struct {
 	HeliosBaseURL              string
 	HeliosAdminToken           string
 	HeliosPollTimeout          time.Duration
+	HeliosMaxRuntime           time.Duration
+	HeliosSubmitLostAfter      time.Duration
 	WorkerID                   string
 	WorkerConcurrency          int
 	WorkerJobTimeout           time.Duration
@@ -114,6 +116,8 @@ func Load() Config {
 		HeliosBaseURL:              strings.TrimRight(getenv("ARGUS_HELIOS_BASE_URL", ""), "/"),
 		HeliosAdminToken:           getenv("ARGUS_HELIOS_ADMIN_TOKEN", ""),
 		HeliosPollTimeout:          getduration("ARGUS_HELIOS_POLL_TIMEOUT", 8*time.Second),
+		HeliosMaxRuntime:           getduration("ARGUS_HELIOS_MAX_RUNTIME", 30*time.Minute),
+		HeliosSubmitLostAfter:      getduration("ARGUS_HELIOS_SUBMIT_LOST_AFTER", 2*time.Minute),
 		WorkerID:                   getenv("ARGUS_WORKER_ID", "argus-worker-1"),
 		WorkerConcurrency:          getint("ARGUS_WORKER_CONCURRENCY", 4),
 		WorkerJobTimeout:           getduration("ARGUS_WORKER_JOB_TIMEOUT", 2*time.Minute),
@@ -165,6 +169,11 @@ func (c Config) Validate() error {
 	// the reconciler must not treat it as abandoned before then.
 	if c.RunningStaleAfter <= c.WorkerJobTimeout+30*time.Second {
 		return fmt.Errorf("ARGUS_RUNNING_STALE_AFTER (%s) must exceed ARGUS_WORKER_JOB_TIMEOUT (%s) by more than 30s", c.RunningStaleAfter, c.WorkerJobTimeout)
+	}
+	// A submission takes up to one HTTP timeout (10s) plus the poll timeout;
+	// treating it as lost sooner would submit the workflow twice.
+	if c.RemediationExecutor == "helios" && c.HeliosSubmitLostAfter <= c.HeliosPollTimeout+30*time.Second {
+		return fmt.Errorf("ARGUS_HELIOS_SUBMIT_LOST_AFTER (%s) must exceed ARGUS_HELIOS_POLL_TIMEOUT (%s) by more than 30s", c.HeliosSubmitLostAfter, c.HeliosPollTimeout)
 	}
 	if c.MigrationMode != "apply" && c.MigrationMode != "verify" {
 		return fmt.Errorf("ARGUS_MIGRATIONS must be apply or verify, got %q", c.MigrationMode)
