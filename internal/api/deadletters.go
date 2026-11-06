@@ -26,7 +26,7 @@ type deadLetterView struct {
 	// RemediationStatus is the remediation's current status, when known.
 	RemediationStatus string `json:"remediation_status,omitempty"`
 	// Replayable is true when replay would re-send a job: the remediation
-	// exists and is still queued.
+	// exists and is still queued or running.
 	Replayable bool `json:"replayable"`
 }
 
@@ -64,7 +64,7 @@ func (s *Server) viewDeadLetter(ctx context.Context, letter queue.DeadLetter) de
 	}
 	if rem, err := s.store.GetRemediation(ctx, letter.RemediationID); err == nil {
 		view.RemediationStatus = rem.Status
-		view.Replayable = rem.Status == remediation.StateQueued
+		view.Replayable = remediation.Dispatchable(rem.Status)
 	}
 	return view
 }
@@ -147,7 +147,7 @@ func (s *Server) replayDeadLetter(w http.ResponseWriter, r *http.Request, view d
 			status = "unknown"
 		}
 		common.WriteJSON(w, http.StatusConflict, map[string]any{
-			"error":              "only a queued remediation can be replayed; discard the dead letter and propose the remediation again",
+			"error":              "only a queued or running remediation can be replayed; discard the dead letter and propose the remediation again",
 			"remediation_id":     view.RemediationID,
 			"remediation_status": status,
 		})
@@ -159,7 +159,7 @@ func (s *Server) replayDeadLetter(w http.ResponseWriter, r *http.Request, view d
 		return
 	}
 	dispatchID, err := dispatcher.Redispatch(ctx, view.RemediationID, remediation.DispatchReplay, actorFromRequest(r), "user", metadata)
-	if errors.Is(err, remediation.ErrNotQueued) {
+	if errors.Is(err, remediation.ErrNotDispatchable) {
 		common.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}

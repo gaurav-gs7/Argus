@@ -58,6 +58,8 @@ type Config struct {
 	OutboxPollInterval         time.Duration
 	RedispatchAfter            time.Duration
 	MaxRedispatches            int
+	RunningStaleAfter          time.Duration
+	WorkerLiveWindow           time.Duration
 	ApprovalWebhookURL         string
 	ApprovalWebhookMode        string
 	ApprovalWebhookSecret      string
@@ -120,6 +122,8 @@ func Load() Config {
 		OutboxPollInterval:         getduration("ARGUS_OUTBOX_POLL_INTERVAL", time.Second),
 		RedispatchAfter:            getduration("ARGUS_REDISPATCH_AFTER", 10*time.Minute),
 		MaxRedispatches:            getint("ARGUS_MAX_REDISPATCHES", 3),
+		RunningStaleAfter:          getduration("ARGUS_RUNNING_STALE_AFTER", 15*time.Minute),
+		WorkerLiveWindow:           getduration("ARGUS_WORKER_LIVE_WINDOW", time.Minute),
 		ApprovalWebhookURL:         getenv("ARGUS_APPROVAL_WEBHOOK_URL", ""),
 		ApprovalWebhookMode:        strings.ToLower(getenv("ARGUS_APPROVAL_WEBHOOK_MODE", "generic")),
 		ApprovalWebhookSecret:      getenv("ARGUS_APPROVAL_WEBHOOK_SECRET", ""),
@@ -156,6 +160,11 @@ func getcsv(key string, fallback []string) []string {
 func (c Config) Validate() error {
 	if c.AIServiceURL != "" && c.AIServiceToken == "" {
 		return fmt.Errorf("ARGUS_AI_SERVICE_TOKEN must be set when ARGUS_AI_SERVICE_URL is configured")
+	}
+	// A live worker marks an over-long job timed_out at WorkerJobTimeout;
+	// the reconciler must not treat it as abandoned before then.
+	if c.RunningStaleAfter <= c.WorkerJobTimeout+30*time.Second {
+		return fmt.Errorf("ARGUS_RUNNING_STALE_AFTER (%s) must exceed ARGUS_WORKER_JOB_TIMEOUT (%s) by more than 30s", c.RunningStaleAfter, c.WorkerJobTimeout)
 	}
 	if c.MigrationMode != "apply" && c.MigrationMode != "verify" {
 		return fmt.Errorf("ARGUS_MIGRATIONS must be apply or verify, got %q", c.MigrationMode)

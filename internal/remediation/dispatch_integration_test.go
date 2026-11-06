@@ -282,6 +282,7 @@ func TestReconcilerRedispatchesThenTimesOut(t *testing.T) {
 	publisher := &fakePublisher{}
 	cfg := remediation.DispatcherConfig{RedispatchAfter: 300 * time.Millisecond, MaxRedispatches: 2}
 	database, store, service, dispatcher := outboxServiceOn(t, ctx, publisher, cfg, true)
+	liveWorker(t, ctx, store, "collect_diagnostics")
 	rem := approvedRemediation(t, ctx, store, remediation.StateApproved)
 	if _, err := service.Execute(ctx, rem.ID, false, "operator-1"); err != nil {
 		t.Fatal(err)
@@ -337,6 +338,7 @@ func TestConcurrentReconcilersRedispatchOnce(t *testing.T) {
 	publisher := &fakePublisher{}
 	cfg := remediation.DispatcherConfig{RedispatchAfter: 200 * time.Millisecond, MaxRedispatches: 5}
 	database, store, service, _ := outboxServiceOn(t, ctx, publisher, cfg, true)
+	liveWorker(t, ctx, store, "collect_diagnostics")
 	rem := approvedRemediation(t, ctx, store, remediation.StateApproved)
 	if _, err := service.Execute(ctx, rem.ID, false, "operator-1"); err != nil {
 		t.Fatal(err)
@@ -357,6 +359,105 @@ func TestConcurrentReconcilersRedispatchOnce(t *testing.T) {
 	wg.Wait()
 	if rows := dispatches(t, database, rem.ID); len(rows) != 2 {
 		t.Fatalf("concurrent reconcilers wrote %d dispatches, want execute + one redispatch: %+v", len(rows), rows)
+	}
+}
+
+// liveWorker records a fresh heartbeat for a worker supporting actions.
+func liveWorker(t *testing.T, ctx context.Context, store *incidents.Store, actions ...string) {
+	t.Helper()
+	heartbeat(t, ctx, store, "worker-live", time.Now().UTC(), actions...)
+}
+
+func heartbeat(t *testing.T, ctx context.Context, store *incidents.Store, workerID string, at time.Time, actions ...string) {
+	t.Helper()
+	if err := store.UpsertWorkerHeartbeat(ctx, workerID, "test-host", at, actions); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Every worker down is not a lost job. Without a live worker that supports
+// the action, the reconciler neither re-sends nor times out the
+// remediation; it reports it as waiting, and acts once such a worker is
+// back.
+func TestReconcilerWaitsWhileNoCapableWorkerIsAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	publisher := &fakePublisher{}
+	cfg := remediation.DispatcherConfig{RedispatchAfter: 200 * time.Millisecond, MaxRedispatches: 1, WorkerLiveWindow: 5 * time.Second}
+	database, store, service, dispatcher := outboxServiceOn(t, ctx, publisher, cfg, true)
+	rem := approvedRemediation(t, ctx, store, remediation.StateApproved)
+	if _, err := service.Execute(ctx, rem.ID, false, "operator-1"); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat(t, ctx, store, "worker-stale", time.Now().UTC().Add(-time.Hour), "collect_diagnostics")
+	heartbeat(t, ctx, store, "worker-other", time.Now().UTC(), "restart_pod")
+	for pass := 0; pass < 3; pass++ {
+		time.Sleep(300 * time.Millisecond)
+		result, err := dispatcher.Reconcile(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !contains(result.WaitingForWorker, rem.ID) || len(result.Redispatched)+len(result.Exhausted) != 0 {
+			t.Fatalf("pass %d without a capable worker: %+v", pass, result)
+		}
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateQueued || len(dispatches(t, database, rem.ID)) != 1 {
+		t.Fatalf("status=%s dispatches=%d while waiting", after.Status, len(dispatches(t, database, rem.ID)))
+	}
+	liveWorker(t, ctx, store, "collect_diagnostics")
+	result, err := dispatcher.Reconcile(ctx)
+	if err != nil || !contains(result.Redispatched, rem.ID) {
+		t.Fatalf("with a capable worker back: %+v err=%v", result, err)
+	}
+}
+
+// A worker claimed the remediation (running) and died; its job was
+// dead-lettered instead of redelivered. The reconciler re-sends it once the
+// remediation has been running longer than RunningStaleAfter, and
+// eventually times it out.
+func TestReconcilerRecoversAbandonedRunningRemediation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	publisher := &fakePublisher{}
+	cfg := remediation.DispatcherConfig{RedispatchAfter: 200 * time.Millisecond, RunningStaleAfter: time.Second, MaxRedispatches: 1}
+	database, store, service, dispatcher := outboxServiceOn(t, ctx, publisher, cfg, true)
+	liveWorker(t, ctx, store, "collect_diagnostics")
+	rem := approvedRemediation(t, ctx, store, remediation.StateApproved)
+	if _, err := service.Execute(ctx, rem.ID, false, "operator-1"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.ClaimRemediation(ctx, rem.ID); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	// A running remediation without a dispatch row is never touched: it may
+	// belong to a synchronous executor.
+	synchronous := approvedRemediation(t, ctx, store, remediation.StateApproved)
+	if _, err := database.Exec(`UPDATE remediation_actions SET status = 'running', started_at = now() - interval '1 hour' WHERE id = $1`, synchronous.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	if result, err := dispatcher.Reconcile(ctx); err != nil || contains(result.Redispatched, rem.ID) {
+		t.Fatalf("re-sent a remediation that only just started running: %+v err=%v", result, err)
+	}
+	time.Sleep(time.Second)
+	result, err := dispatcher.Reconcile(ctx)
+	if err != nil || !contains(result.Redispatched, rem.ID) || contains(result.Redispatched, synchronous.ID) {
+		t.Fatalf("abandoned running remediation: %+v err=%v", result, err)
+	}
+	if events := publisher.published(rem.ID); len(events) != 2 {
+		t.Fatalf("job for a running remediation was not re-published (%d events)", len(events))
+	}
+	time.Sleep(300 * time.Millisecond)
+	result, err = dispatcher.Reconcile(ctx)
+	if err != nil || !contains(result.Exhausted, rem.ID) {
+		t.Fatalf("exhaustion: %+v err=%v", result, err)
+	}
+	if after, _ := store.GetRemediation(ctx, rem.ID); after.Status != remediation.StateTimedOut {
+		t.Fatalf("status=%s", after.Status)
+	}
+	if after, _ := store.GetRemediation(ctx, synchronous.ID); after.Status != remediation.StateRunning {
+		t.Fatalf("synchronous-executor remediation was changed: %s", after.Status)
 	}
 }
 

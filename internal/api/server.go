@@ -163,9 +163,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	dispatchContext, dispatchCancel := context.WithCancel(context.Background())
 	if remediationService.Dispatcher() != nil {
 		dispatcher := remediation.NewDispatcher(store, auditor, queueClient, metrics, logger, remediation.DispatcherConfig{
-			PollInterval:    cfg.OutboxPollInterval,
-			RedispatchAfter: cfg.RedispatchAfter,
-			MaxRedispatches: cfg.MaxRedispatches,
+			PollInterval:      cfg.OutboxPollInterval,
+			RedispatchAfter:   cfg.RedispatchAfter,
+			MaxRedispatches:   cfg.MaxRedispatches,
+			RunningStaleAfter: cfg.RunningStaleAfter,
+			WorkerLiveWindow:  cfg.WorkerLiveWindow,
 		})
 		remediationService.UseDispatcher(dispatcher)
 		go dispatcher.Run(dispatchContext)

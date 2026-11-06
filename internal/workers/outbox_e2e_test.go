@@ -136,4 +136,34 @@ func TestDeadLetteredJobIsRecoveredByTheReconciler(t *testing.T) {
 	if n := testutil.AuditCount(t, database, rem.ID, "remediation.redispatched"); n != 1 {
 		t.Fatalf("redispatch audit entries=%d", n)
 	}
+
+	// A worker claimed a second remediation and died mid-execution; its job
+	// is gone (dead-lettered). The remediation is running with nobody
+	// running it. The reconciler re-sends it once it is stale, and a live
+	// worker re-claims and finishes it.
+	abandoned := rem
+	abandoned.ID = fmt.Sprintf("rem_abandoned_%d", time.Now().UnixNano())
+	abandoned.IdempotencyKey = fmt.Sprintf("abandoned-%d", time.Now().UnixNano())
+	abandoned.Status = remediationpkg.StateApproved
+	if err := store.CreateRemediation(ctx, abandoned); err != nil {
+		t.Fatal(err)
+	}
+	stale := remediationpkg.NewService(store, auditor, policy.NewEngine(), nil, remediationpkg.NewLocalExecutor(), safetyMetrics, nil)
+	if _, err := stale.Execute(ctx, abandoned.ID, false, "operator-1"); err != nil { // no dispatcher: job never published
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE remediation_actions SET status = 'running', started_at = now() - interval '1 hour' WHERE id = $1`, abandoned.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE remediation_dispatches SET state = 'published', published_at = now() - interval '1 hour', created_at = now() - interval '1 hour' WHERE remediation_id = $1`, abandoned.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, err = dispatcher.Reconcile(ctx)
+	if err != nil || len(result.Redispatched) != 1 || result.Redispatched[0] != abandoned.ID {
+		t.Fatalf("abandoned running remediation: %+v err=%v", result, err)
+	}
+	waitFor(t, 15*time.Second, func() bool {
+		after, _ := store.GetRemediation(ctx, abandoned.ID)
+		return after.Status == remediationpkg.StateSucceeded
+	})
 }

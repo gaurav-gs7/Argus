@@ -18,6 +18,8 @@ type Metrics struct {
 	RemediationDispatchesTotal            *prometheus.CounterVec
 	RemediationRedispatchesTotal          *prometheus.CounterVec
 	RemediationOutboxOldestPendingSeconds prometheus.Gauge
+	RemediationWaitingForWorker           prometheus.Gauge
+	HeliosReconciliationsTotal            *prometheus.CounterVec
 	AuditWriteFailuresTotal               *prometheus.CounterVec
 	RCAConfidence                         *prometheus.HistogramVec
 	ApprovalRequestsTotal                 *prometheus.CounterVec
@@ -102,6 +104,14 @@ func MustRegister() *Metrics {
 		RemediationRedispatchesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "argus_remediation_redispatches_total",
 			Help: "Reconciler actions on remediations no worker picked up, by result (redispatched, exhausted)",
+		}, []string{"result"}),
+		RemediationWaitingForWorker: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "argus_remediation_waiting_for_worker",
+			Help: "Stuck remediations the reconciler is holding because no live worker supports their action",
+		}),
+		HeliosReconciliationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "argus_helios_reconciliations_total",
+			Help: "Helios workflow reconciliations, by result (succeeded, failed, timed_out, adopted, resubmitted, error)",
 		}, []string{"result"}),
 		RemediationOutboxOldestPendingSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "argus_remediation_outbox_oldest_pending_seconds",
@@ -197,6 +207,8 @@ func MustRegister() *Metrics {
 		m.RemediationDispatchesTotal,
 		m.RemediationRedispatchesTotal,
 		m.RemediationOutboxOldestPendingSeconds,
+		m.RemediationWaitingForWorker,
+		m.HeliosReconciliationsTotal,
 		m.AuditWriteFailuresTotal,
 		m.RCAConfidence,
 		m.ApprovalRequestsTotal,

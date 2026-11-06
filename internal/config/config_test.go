@@ -51,3 +51,15 @@ func TestAIServiceIsOptInAndNeedsAToken(t *testing.T) {
 		t.Fatalf("url=%q err=%v", cfg.AIServiceURL, err)
 	}
 }
+
+func TestRunningStaleAfterMustExceedTheJobTimeout(t *testing.T) {
+	t.Setenv("ARGUS_WORKER_JOB_TIMEOUT", "10m")
+	t.Setenv("ARGUS_RUNNING_STALE_AFTER", "10m")
+	if err := Load().Validate(); err == nil {
+		t.Fatal("a running remediation could be re-sent while its worker is still inside the job timeout")
+	}
+	t.Setenv("ARGUS_RUNNING_STALE_AFTER", "11m")
+	if err := Load().Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

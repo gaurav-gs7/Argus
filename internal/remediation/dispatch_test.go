@@ -22,7 +22,8 @@ func TestNewDispatcherFillsDefaults(t *testing.T) {
 	d := NewDispatcher(nil, nil, nil, nil, nil, DispatcherConfig{MaxRedispatches: 7})
 	def := DefaultDispatcherConfig()
 	if d.cfg.MaxRedispatches != 7 || d.cfg.PollInterval != def.PollInterval || d.cfg.RedispatchAfter != def.RedispatchAfter ||
-		d.cfg.BatchSize != def.BatchSize || d.cfg.PublishTimeout != def.PublishTimeout || d.cfg.ReconcileInterval != def.ReconcileInterval || d.logger == nil {
+		d.cfg.BatchSize != def.BatchSize || d.cfg.PublishTimeout != def.PublishTimeout || d.cfg.ReconcileInterval != def.ReconcileInterval ||
+		d.cfg.RunningStaleAfter != def.RunningStaleAfter || d.cfg.WorkerLiveWindow != def.WorkerLiveWindow || d.logger == nil {
 		t.Fatalf("cfg=%+v", d.cfg)
 	}
 }
@@ -71,5 +72,16 @@ func TestDispatcherRunStops(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop")
+	}
+}
+
+func TestOnlyQueuedAndRunningRemediationsAreDispatchable(t *testing.T) {
+	for state, want := range map[string]bool{
+		StateQueued: true, StateRunning: true, StateApproved: false, StateCancelled: false,
+		StateSucceeded: false, StateFailed: false, StateTimedOut: false, StateAwaitingApproval: false,
+	} {
+		if Dispatchable(state) != want {
+			t.Fatalf("Dispatchable(%s) != %v", state, want)
+		}
 	}
 }

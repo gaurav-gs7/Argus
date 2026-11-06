@@ -43,6 +43,15 @@ type DispatcherConfig struct {
 	MaxRedispatches int
 	// ReconcileInterval is how often the reconciler runs.
 	ReconcileInterval time.Duration
+	// RunningStaleAfter is how long a remediation may stay running before the
+	// reconciler treats the worker that claimed it as gone. It must exceed the
+	// worker job timeout, after which a live worker records timed_out itself.
+	RunningStaleAfter time.Duration
+	// WorkerLiveWindow is how recent a worker heartbeat must be for that
+	// worker to count as alive. With no live worker that supports an action,
+	// the reconciler neither re-sends nor times out its remediations: a job
+	// is not lost just because every worker is down.
+	WorkerLiveWindow time.Duration
 }
 
 func DefaultDispatcherConfig() DispatcherConfig {
@@ -53,6 +62,8 @@ func DefaultDispatcherConfig() DispatcherConfig {
 		RedispatchAfter:   10 * time.Minute,
 		MaxRedispatches:   3,
 		ReconcileInterval: 30 * time.Second,
+		RunningStaleAfter: 15 * time.Minute,
+		WorkerLiveWindow:  time.Minute,
 	}
 }
 
@@ -88,6 +99,12 @@ func NewDispatcher(store *incidents.Store, auditor *audit.Service, publisher Pub
 	}
 	if cfg.ReconcileInterval <= 0 {
 		cfg.ReconcileInterval = def.ReconcileInterval
+	}
+	if cfg.RunningStaleAfter <= 0 {
+		cfg.RunningStaleAfter = def.RunningStaleAfter
+	}
+	if cfg.WorkerLiveWindow <= 0 {
+		cfg.WorkerLiveWindow = def.WorkerLiveWindow
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -208,9 +225,9 @@ func (d *Dispatcher) publish(ctx context.Context, onlyID string) (int, error) {
 		}
 
 		for _, p := range batch {
-			if p.status != StateQueued {
-				// Cancelled, timed out or already running from an earlier
-				// dispatch: publishing would only make a worker skip it.
+			if p.status != StateQueued && p.status != StateRunning {
+				// Cancelled, timed out or finished: publishing would only
+				// make a worker skip it.
 				if _, err := tx.Tx().ExecContext(ctx, `
 					UPDATE remediation_dispatches SET state = 'skipped', last_error = $2 WHERE id = $1
 				`, p.id, "remediation is "+p.status); err != nil {
@@ -270,14 +287,22 @@ func (d *Dispatcher) count(result string) {
 type ReconcileResult struct {
 	Redispatched []string
 	Exhausted    []string
+	// WaitingForWorker lists stuck remediations left alone because no live
+	// worker supports their action.
+	WaitingForWorker []string
 }
 
-// ErrNotQueued means a dispatch was requested for a remediation that is no
-// longer queued.
-var ErrNotQueued = errors.New("remediation is not queued")
+// ErrNotDispatchable means a dispatch was requested for a remediation that
+// is neither queued nor running.
+var ErrNotDispatchable = errors.New("remediation is not queued or running")
 
-// Redispatch writes a new dispatch for a queued remediation in its own
-// transaction, with an audit entry. Replaying a dead letter uses it.
+// Dispatchable reports whether a job can be (re-)sent for a remediation in
+// this status. Re-sending a running one is safe: the worker re-claims it and
+// the execution receipt turns a repeat into a reuse.
+func Dispatchable(status string) bool { return status == StateQueued || status == StateRunning }
+
+// Redispatch writes a new dispatch for a queued or running remediation in
+// its own transaction, with an audit entry. Replaying a dead letter uses it.
 func (d *Dispatcher) Redispatch(ctx context.Context, remediationID, reason, actorID, actorType string, metadata map[string]any) (string, error) {
 	var dispatchID string
 	err := d.store.InTx(ctx, func(tx *incidents.Store) error {
@@ -301,8 +326,8 @@ func (d *Dispatcher) redispatchTx(ctx context.Context, tx *incidents.Store, reme
 	`, remediationID).Scan(&status, &count); err != nil {
 		return "", err
 	}
-	if status != StateQueued {
-		return "", fmt.Errorf("%w: it is %s", ErrNotQueued, status)
+	if !Dispatchable(status) {
+		return "", fmt.Errorf("%w: it is %s", ErrNotDispatchable, status)
 	}
 	rem, err := tx.GetRemediation(ctx, remediationID)
 	if err != nil {
@@ -319,19 +344,30 @@ func (d *Dispatcher) redispatchTx(ctx context.Context, tx *incidents.Store, reme
 	metadata["reason"] = reason
 	return dispatchID, audit.WriteTx(ctx, tx.Tx(), audit.Entry{
 		ActorID: actorID, ActorType: actorType, Action: "remediation.redispatched", ResourceType: "remediation", ResourceID: remediationID,
-		BeforeState: map[string]any{"status": StateQueued},
-		AfterState:  map[string]any{"status": StateQueued},
+		BeforeState: map[string]any{"status": status},
+		AfterState:  map[string]any{"status": status},
 		Metadata:    metadata,
 	})
 }
 
-// Reconcile finds remediations that stayed queued for RedispatchAfter with
-// no pending dispatch and no publish in that window, which means no worker
-// took the job (it was dead-lettered, expired, or lost with the JetStream
-// node). It re-sends the job up to MaxRedispatches times since the last
-// execute or replay, then marks the remediation timed_out: a job nobody ran
-// for that long should not run later by surprise. Remediations queued before
-// the outbox existed have no dispatch row and are re-sent the same way.
+// Reconcile finds two kinds of stuck remediation, each with no pending
+// dispatch and no publish within RedispatchAfter:
+//
+//   - queued for RedispatchAfter: no worker took the job (it was
+//     dead-lettered, expired, or lost with the JetStream node);
+//   - running for RunningStaleAfter: the worker that claimed it died, and
+//     its job was dead-lettered instead of redelivered.
+//
+// It re-sends the job up to MaxRedispatches times since the last execute or
+// replay, then marks the remediation timed_out: a job nobody completed for
+// that long should not run later by surprise. Re-sending a running
+// remediation is safe because the worker re-claims it and its execution
+// receipt makes a repeat a reuse. Only while a live worker supports the
+// action does any of this happen; otherwise the remediation waits, counted
+// in argus_remediation_waiting_for_worker. Remediations queued before the
+// outbox existed have no dispatch row and are re-sent the same way; running
+// ones without a dispatch row are left alone, since they may belong to a
+// synchronous executor.
 func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	var result ReconcileResult
 	err := d.store.InTx(ctx, func(tx *incidents.Store) error {
@@ -354,14 +390,18 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 
 		after := d.cfg.RedispatchAfter.Seconds()
 		rows, err := tx.Tx().QueryContext(ctx, `
-			SELECT r.id,
+			SELECT r.id, r.status,
 				(SELECT count(*) FROM remediation_dispatches d
 				 WHERE d.remediation_id = r.id AND d.reason = 'redispatch'
 				   AND d.created_at > COALESCE((SELECT max(x.created_at) FROM remediation_dispatches x
-				                                WHERE x.remediation_id = r.id AND x.reason <> 'redispatch'), '-infinity'))
+				                                WHERE x.remediation_id = r.id AND x.reason <> 'redispatch'), '-infinity')),
+				EXISTS (SELECT 1 FROM worker_heartbeats w
+				        WHERE w.last_heartbeat_at > now() - make_interval(secs => $3)
+				          AND r.action_type = ANY(w.supported_actions))
 			FROM remediation_actions r
-			WHERE r.status = 'queued'
-			  AND r.queued_at < now() - make_interval(secs => $1)
+			WHERE ((r.status = 'queued' AND r.queued_at < now() - make_interval(secs => $1))
+			    OR (r.status = 'running' AND r.started_at < now() - make_interval(secs => $2)
+			        AND EXISTS (SELECT 1 FROM remediation_dispatches d0 WHERE d0.remediation_id = r.id)))
 			  AND NOT EXISTS (
 				SELECT 1 FROM remediation_dispatches d
 				WHERE d.remediation_id = r.id
@@ -369,18 +409,19 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 			ORDER BY r.queued_at
 			LIMIT 100
 			FOR UPDATE OF r SKIP LOCKED
-		`, after)
+		`, after, d.cfg.RunningStaleAfter.Seconds(), d.cfg.WorkerLiveWindow.Seconds())
 		if err != nil {
 			return fmt.Errorf("find stuck remediations: %w", err)
 		}
 		type stuck struct {
-			id           string
+			id, status   string
 			redispatches int
+			hasWorker    bool
 		}
 		var found []stuck
 		for rows.Next() {
 			var s stuck
-			if err := rows.Scan(&s.id, &s.redispatches); err != nil {
+			if err := rows.Scan(&s.id, &s.status, &s.redispatches, &s.hasWorker); err != nil {
 				rows.Close()
 				return err
 			}
@@ -392,14 +433,18 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 		}
 
 		for _, s := range found {
+			if !s.hasWorker {
+				result.WaitingForWorker = append(result.WaitingForWorker, s.id)
+				continue
+			}
 			if s.redispatches >= d.cfg.MaxRedispatches {
-				reason := fmt.Sprintf("no worker ran the job after %d redispatches", s.redispatches)
+				reason := fmt.Sprintf("no worker completed the job after %d redispatches", s.redispatches)
 				if err := requireApplied(tx.CompleteRemediation(ctx, s.id, StateTimedOut, map[string]any{"reason": reason}, reason)); err != nil {
 					return err
 				}
 				if err := audit.WriteTx(ctx, tx.Tx(), audit.Entry{
 					ActorType: "system", Action: "remediation.dispatch_exhausted", ResourceType: "remediation", ResourceID: s.id,
-					BeforeState: map[string]any{"status": StateQueued},
+					BeforeState: map[string]any{"status": s.status},
 					AfterState:  map[string]any{"status": StateTimedOut, "error": reason},
 				}); err != nil {
 					return err
@@ -408,7 +453,7 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 				continue
 			}
 			if _, err := d.redispatchTx(ctx, tx, s.id, DispatchRedispatch, "", "system", map[string]any{
-				"redispatch": s.redispatches + 1, "max_redispatches": d.cfg.MaxRedispatches,
+				"redispatch": s.redispatches + 1, "max_redispatches": d.cfg.MaxRedispatches, "stuck_in": s.status,
 			}); err != nil {
 				return err
 			}
@@ -422,6 +467,10 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	if d.metrics != nil {
 		d.metrics.RemediationRedispatchesTotal.WithLabelValues("redispatched").Add(float64(len(result.Redispatched)))
 		d.metrics.RemediationRedispatchesTotal.WithLabelValues("exhausted").Add(float64(len(result.Exhausted)))
+		d.metrics.RemediationWaitingForWorker.Set(float64(len(result.WaitingForWorker)))
+	}
+	if len(result.WaitingForWorker) > 0 {
+		d.logger.Warn("remediations are waiting for a live worker that supports their action", "remediations", result.WaitingForWorker)
 	}
 	for _, id := range result.Exhausted {
 		d.logger.Warn("remediation timed out waiting for a worker", "remediation_id", id)
