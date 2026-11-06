@@ -20,7 +20,8 @@
 - durable execution receipts make JetStream replay safe
 - the job is written to a PostgreSQL outbox in the same transaction as the queue reservation, so a crash or JetStream outage cannot strand a queued remediation without its job
 - each job is published once per reservation (`Nats-Msg-Id`), retried with backoff on infrastructure errors, bounded by `ARGUS_WORKER_MAX_DELIVER`, and dead-lettered to `ARGUS_DEAD_LETTER` when malformed or exhausted
-- a queued remediation no worker ran is re-sent by the reconciler up to `ARGUS_MAX_REDISPATCHES` times, then marked `timed_out` rather than running late
+- a queued remediation no worker ran, or a running one whose worker died, is re-sent by the reconciler up to `ARGUS_MAX_REDISPATCHES` times, then marked `timed_out` rather than running late; with no live worker for the action it waits instead
+- with the Helios executor, a reconciler follows each workflow to its final state, cancels workflows that outlive `ARGUS_HELIOS_MAX_RUNTIME`, and adopts or resubmits submissions lost to an API crash
 - admins list, replay, or discard dead letters (`argus deadletter ...`); replay only re-sends a still-queued remediation, and both actions are audited
 - a job that exceeds `ARGUS_WORKER_JOB_TIMEOUT` is marked `timed_out` instead of retried, and a worker runs at most `ARGUS_WORKER_CONCURRENCY` jobs at once
 

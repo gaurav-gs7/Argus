@@ -12,7 +12,7 @@ Argus uses Docker Compose for supported local development. The Kubernetes packag
 - API and AI health probes
 - ClusterIP services, optional ingress, network policies, PDBs, and API HPA
 - Prometheus annotations in Kustomize and an optional `ServiceMonitor` in Helm
-- CI linting and deterministic rendering
+- CI linting and deterministic rendering, plus a kind-cluster job (`scripts/test-k8s-e2e.sh`) that installs the chart, checks the migrate init container and verify mode, upgrades and rolls back, and starts pods against a newer compatible schema and refuses a breaking one
 
 ## Schema Migrations
 
@@ -84,9 +84,9 @@ Do not run Kubernetes alongside the full Compose profile on an 8 GB machine. Use
 
 ## Production Readiness Gap
 
-CI proves chart linting and deterministic manifest generation, not cluster compatibility or operational readiness. Before production use, add:
+CI installs, upgrades and rolls back the chart on a single-node kind cluster with disposable PostgreSQL and NATS. That proves the chart works on Kubernetes, not operational readiness. Before production use, add:
 
-1. ephemeral-cluster install and upgrade tests
+1. multi-node and managed-cluster install tests with real ingress, TLS and network-policy enforcement
 2. signed multi-architecture image publishing with SBOMs and provenance
 3. external secret integration
 4. backup/restore and JetStream recovery exercises

@@ -33,7 +33,7 @@ Running `argus-api` outside Compose leaves the AI service off unless `ARGUS_AI_S
 
 The schema lives in `migrations/NNNN_name.sql`, embedded in the API and worker binaries. By default (`ARGUS_MIGRATIONS=apply`) both apply pending migrations at startup under one PostgreSQL advisory lock, each file in its own transaction, and record them in `schema_migrations` with a SHA-256 checksum. With `ARGUS_MIGRATIONS=verify` they apply nothing and refuse to start until `argus-api migrate` (which honours `ARGUS_MIGRATION_POSTGRES_DSN`) has run; Kubernetes uses that split.
 
-To change the schema, add the next numbered file; never edit or renumber a released one, because startup fails if an applied file's checksum changes. Keep migrations backward compatible (add columns, tables and indexes, backfill; do not drop or rename what the previous release reads) so the previous release can run against the new schema during a rollout or rollback. If a migration cannot be compatible, put `-- argus:breaking` before its first statement: older builds then refuse to start against it. Files must not contain statements that cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`. A database created before migrations were tracked is adopted by `0001_baseline.sql`, which is idempotent.
+To change the schema, add the next numbered file; never edit or renumber a released one, because startup fails if an applied file's checksum changes. Keep migrations backward compatible (add columns, tables and indexes, backfill; do not drop or rename what the previous release reads) so the previous release can run against the new schema during a rollout or rollback. If a migration cannot be compatible, put `-- argus:breaking` before its first statement: older builds then refuse to start against it. A test (`go test ./migrations`) fails for drops, renames, type changes, new NOT NULL columns or constraints, and data deletion in a migration that is neither breaking nor marked `-- argus:compatible <reason>` after review. Files must not contain statements that cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`. A database created before migrations were tracked is adopted by `0001_baseline.sql`, which is idempotent.
 
 ## Recommended LLM Modes
 
@@ -52,6 +52,8 @@ export ARGUS_HELIOS_ADMIN_TOKEN=change-me-admin-token
 ```
 
 For Docker Compose on the same Mac, `host.docker.internal` is the simplest default if Helios is running outside the Argus Compose project.
+
+Argus submits one `write_artifact` task with Helios's `manifest` sink, which records the remediation intent under its idempotency key. If its poll (`ARGUS_HELIOS_POLL_TIMEOUT`) ends before the workflow, the remediation stays `running` with the workflow id, and the API's Helios reconciler settles it within 30 seconds of Helios finishing; it cancels workflows still running after `ARGUS_HELIOS_MAX_RUNTIME` (30m). The CI job `helios-integration` runs this against a real Helios control plane and worker.
 
 ## Suggested Flow
 

@@ -109,7 +109,7 @@ Jobs a worker gives up on, and JetStream's max-deliveries advisories for jobs th
 
 `GET /v1/dead-letters?limit=50` lists them oldest first with `sequence`, `kind` (`job` or `max_deliveries_advisory`), `reason`, `deliveries`, `remediation_id`, the remediation's current `remediation_status`, and `replayable`.
 
-`POST /v1/dead-letters/{sequence}/replay` with `{"reason": "..."}` re-sends the job of a remediation that is still `queued` through the outbox (audited as `remediation.redispatched`), deletes the dead letter, and returns `202` with the `dispatch_id`. It returns `409` with the remediation status when the remediation has moved on, and `422` when the dead letter names no remediation.
+`POST /v1/dead-letters/{sequence}/replay` with `{"reason": "..."}` re-sends the job of a remediation that is still `queued` or `running` through the outbox (audited as `remediation.redispatched`), deletes the dead letter, and returns `202` with the `dispatch_id`. It returns `409` with the remediation status when the remediation has moved on, and `422` when the dead letter names no remediation.
 
 `POST /v1/dead-letters/{sequence}/discard` with `{"reason": "..."}` records `remediation.dead_letter_discarded` and then deletes the dead letter.
 
