@@ -1,6 +1,8 @@
 package topology
 
 import (
+	"fmt"
+	"math/rand"
 	"reflect"
 	"testing"
 )
@@ -72,5 +74,48 @@ func demoDependencies() []Dependency {
 		{Service: "payments-api", DependsOn: "postgres"},
 		{Service: "payments-api", DependsOn: "redis"},
 		{Service: "payments-api", DependsOn: "notification-api"},
+	}
+}
+
+// Related must name exactly the services Path can connect to a service in
+// either direction: ingestion uses it to decide which open incidents can be
+// correlated, so a missing service would split an incident.
+func TestRelatedMatchesPathOnRandomGraphs(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	for round := 0; round < 200; round++ {
+		n := 2 + rng.Intn(9)
+		var edges []Dependency
+		for i := 0; i < rng.Intn(n*2+1); i++ {
+			edges = append(edges, Dependency{Service: fmt.Sprintf("s%d", rng.Intn(n)), DependsOn: fmt.Sprintf("s%d", rng.Intn(n))})
+		}
+		graph := New(edges)
+		for i := 0; i < n; i++ {
+			service := fmt.Sprintf("s%d", i)
+			want := map[string]bool{service: true}
+			for j := 0; j < n; j++ {
+				other := fmt.Sprintf("s%d", j)
+				if _, ok := graph.Path(service, other); ok {
+					want[other] = true
+				}
+				if _, ok := graph.Path(other, service); ok {
+					want[other] = true
+				}
+			}
+			got := graph.Related(service)
+			if len(got) != len(want) {
+				t.Fatalf("round %d: Related(%s)=%v, want %v (edges %v)", round, service, got, want, edges)
+			}
+			for _, name := range got {
+				if !want[name] {
+					t.Fatalf("round %d: Related(%s) includes unrelated %s", round, service, name)
+				}
+			}
+		}
+	}
+	if got := New(nil).Related("isolated"); len(got) != 1 || got[0] != "isolated" {
+		t.Fatalf("a service outside the graph relates only to itself: %v", got)
+	}
+	if New(nil).Related("") != nil {
+		t.Fatal("empty service")
 	}
 }

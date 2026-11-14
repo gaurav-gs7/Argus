@@ -32,12 +32,14 @@ type Group struct {
 
 type Graph struct {
 	dependencies map[string][]string
+	dependents   map[string][]string
 	services     map[string]struct{}
 }
 
 func New(edges []Dependency) *Graph {
 	graph := &Graph{
 		dependencies: make(map[string][]string),
+		dependents:   make(map[string][]string),
 		services:     make(map[string]struct{}),
 	}
 	for _, edge := range edges {
@@ -47,11 +49,40 @@ func New(edges []Dependency) *Graph {
 		graph.services[edge.Service] = struct{}{}
 		graph.services[edge.DependsOn] = struct{}{}
 		graph.dependencies[edge.Service] = appendUnique(graph.dependencies[edge.Service], edge.DependsOn)
+		graph.dependents[edge.DependsOn] = appendUnique(graph.dependents[edge.DependsOn], edge.Service)
 	}
 	for service := range graph.dependencies {
 		sort.Strings(graph.dependencies[service])
 	}
 	return graph
+}
+
+// Related returns the service itself, everything it depends on (directly or
+// transitively) and everything that depends on it, sorted. These are exactly
+// the services for which Path(service, x) or Path(x, service) exists, so an
+// incident on any other service can never be correlated with this one.
+func (g *Graph) Related(service string) []string {
+	if service == "" {
+		return nil
+	}
+	seen := map[string]struct{}{service: {}}
+	for _, edges := range []map[string][]string{g.dependencies, g.dependents} {
+		queue := []string{service}
+		visited := map[string]struct{}{service: {}}
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			for _, next := range edges[current] {
+				if _, ok := visited[next]; ok {
+					continue
+				}
+				visited[next] = struct{}{}
+				seen[next] = struct{}{}
+				queue = append(queue, next)
+			}
+		}
+	}
+	return sortedKeys(seen)
 }
 
 func (g *Graph) Path(service, dependency string) (Path, bool) {

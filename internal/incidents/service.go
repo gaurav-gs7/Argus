@@ -178,10 +178,6 @@ func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload Alertman
 	}
 	graph := topology.New(dependencies)
 	groups := topologyGroupsByEnvironment(graph, alerts)
-	openIncidents, err := tx.ListOpenIncidents(ctx, m.grouping)
-	if err != nil {
-		return IngestionResult{}, err
-	}
 
 	incidentsOut := make([]Incident, 0, len(groups))
 	for _, group := range groups {
@@ -190,6 +186,13 @@ func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload Alertman
 			continue
 		}
 		rootAlert := rootAlertForGroup(groupAlerts, group.Root)
+		// Only incidents on services topology relates to this root can
+		// absorb the group. Reading them per group, inside the transaction,
+		// also sees incidents created or promoted earlier in this delivery.
+		openIncidents, err := tx.ListOpenIncidentsForServices(ctx, m.grouping, group.Environment, graph.Related(group.Root))
+		if err != nil {
+			return IngestionResult{}, err
+		}
 		incident, created, promoted, err := m.findOrCreateTopologyIncident(ctx, tx, graph, group, rootAlert, openIncidents)
 		if err != nil {
 			return IngestionResult{}, err
@@ -277,7 +280,6 @@ func (m *ServiceManager) ingest(ctx context.Context, tx *Store, payload Alertman
 			}
 		}
 		incidentsOut = append(incidentsOut, *incident)
-		openIncidents = appendOrReplaceIncident(openIncidents, *incident)
 	}
 	return IngestionResult{Incidents: incidentsOut, Stats: stats}, nil
 }
@@ -708,16 +710,6 @@ func topologyConfidence(inferred, suppressed bool) float64 {
 		return 0.92
 	}
 	return 1
-}
-
-func appendOrReplaceIncident(items []Incident, incident Incident) []Incident {
-	for i := range items {
-		if items[i].ID == incident.ID {
-			items[i] = incident
-			return items
-		}
-	}
-	return append(items, incident)
 }
 
 func firstNonEmpty(values ...string) string {

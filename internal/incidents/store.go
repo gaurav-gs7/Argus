@@ -273,8 +273,10 @@ func (s *Store) queryIncidents(ctx context.Context, query string, args ...any) (
 func (s *Store) FindOpenByDedupeKey(ctx context.Context, dedupeKey string, grouping Grouping) (*Incident, error) {
 	items, err := s.queryIncidents(ctx, incidentSelect+`
 		WHERE `+activeForGrouping+`
-		  AND (i.dedupe_key = $3 OR EXISTS (
-				SELECT 1 FROM incident_alerts a WHERE a.incident_id = i.id AND a.dedupe_key = $3))
+		  AND i.id IN (
+				SELECT id FROM incidents WHERE dedupe_key = $3
+				UNION
+				SELECT incident_id FROM incident_alerts WHERE dedupe_key = $3)
 		ORDER BY i.last_seen_at DESC, i.id
 		LIMIT 1
 	`, intervalLiteral(grouping.Window), intervalLiteral(grouping.AlertStaleAfter), dedupeKey)
@@ -295,6 +297,27 @@ func (s *Store) ListOpenIncidents(ctx context.Context, grouping Grouping) ([]Inc
 	`, intervalLiteral(grouping.Window), intervalLiteral(grouping.AlertStaleAfter))
 	if err != nil {
 		return nil, fmt.Errorf("list open incidents: %w", err)
+	}
+	return items, nil
+}
+
+// ListOpenIncidentsForServices returns the incidents in one environment, on
+// the named services, that may still absorb related alerts, oldest first.
+// Ingestion asks only for the services topology can relate to an alert, so
+// its cost follows the size of that neighbourhood, not the number of open
+// incidents.
+func (s *Store) ListOpenIncidentsForServices(ctx context.Context, grouping Grouping, environment string, services []string) ([]Incident, error) {
+	if len(services) == 0 {
+		return nil, nil
+	}
+	items, err := s.queryIncidents(ctx, incidentSelect+`
+		WHERE `+activeForGrouping+`
+		  AND i.environment = $3
+		  AND i.service_id IN (SELECT id FROM services WHERE name = ANY($4))
+		ORDER BY i.started_at ASC, i.id ASC
+	`, intervalLiteral(grouping.Window), intervalLiteral(grouping.AlertStaleAfter), environment, services)
+	if err != nil {
+		return nil, fmt.Errorf("list open incidents for services: %w", err)
 	}
 	return items, nil
 }
