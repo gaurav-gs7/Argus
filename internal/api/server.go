@@ -66,7 +66,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		return nil, err
 	}
 
-	queueClient, err := queue.Connect(cfg.NATSURL)
+	metrics := telemetry.MustRegister()
+	queueClient, err := queue.ConnectWith(cfg.NATSURL, queue.ConnectOptions{Name: "argus-api", Logger: logger, OnStatus: metrics.NATSStatus})
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +85,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		}
 	}
 
-	metrics := telemetry.MustRegister()
 	authenticator, err := auth.NewOIDCAuthenticator(ctx, auth.OIDCConfig{
 		IssuerURL:         cfg.OIDCIssuerURL,
 		Audience:          cfg.OIDCAudience,

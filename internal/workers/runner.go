@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/actions"
@@ -40,10 +42,13 @@ type RunnerConfig struct {
 	MaxDeliver int
 	// FetchWait is how long one pull request waits for work.
 	FetchWait time.Duration
+	// FetchRetryWait is the pause after a pull fails for a reason other than
+	// there being no work.
+	FetchRetryWait time.Duration
 }
 
 func DefaultRunnerConfig() RunnerConfig {
-	return RunnerConfig{Concurrency: 4, JobTimeout: 2 * time.Minute, MaxDeliver: 5, FetchWait: 2 * time.Second}
+	return RunnerConfig{Concurrency: 4, JobTimeout: 2 * time.Minute, MaxDeliver: 5, FetchWait: 2 * time.Second, FetchRetryWait: time.Second}
 }
 
 type Runner struct {
@@ -54,6 +59,35 @@ type Runner struct {
 	handlers map[string]Handler
 	cfg      RunnerConfig
 	inflight sync.WaitGroup
+	logger   *slog.Logger
+	// lastPoll is when the fetch loop last completed an iteration (unix
+	// nanoseconds); subscribed is whether it currently holds a subscription.
+	lastPoll   atomic.Int64
+	subscribed atomic.Bool
+}
+
+// SetLogger sets where the runner reports delivery problems.
+func (r *Runner) SetLogger(logger *slog.Logger) { r.logger = logger }
+
+func (r *Runner) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
+}
+
+// Alive reports whether the fetch loop has made progress within maxAge. A
+// loop that stopped turning means the worker is stuck and should be
+// restarted.
+func (r *Runner) Alive(maxAge time.Duration) bool {
+	last := r.lastPoll.Load()
+	return last != 0 && time.Since(time.Unix(0, last)) <= maxAge
+}
+
+// Ready reports whether the worker can take jobs right now: it is connected
+// to NATS and subscribed to the remediation consumer.
+func (r *Runner) Ready() bool {
+	return r.queue != nil && r.queue.Connected() && r.subscribed.Load()
 }
 
 func NewRunner(store *incidents.Store, auditor *audit.Service, queueClient *queue.Client, metrics *telemetry.Metrics, handlers ...Handler) *Runner {
@@ -85,6 +119,9 @@ func (r *Runner) Configure(cfg RunnerConfig) {
 	}
 	if cfg.FetchWait <= 0 {
 		cfg.FetchWait = def.FetchWait
+	}
+	if cfg.FetchRetryWait <= 0 {
+		cfg.FetchRetryWait = def.FetchRetryWait
 	}
 	r.cfg = cfg
 }
@@ -135,19 +172,30 @@ func (r *Runner) ensureConsumer(js nats.JetStreamContext) error {
 	return nil
 }
 
-func (r *Runner) Start(ctx context.Context, workerID string) error {
+// subscribe makes sure the stream and the worker consumer exist and binds a
+// pull subscription to the consumer.
+func (r *Runner) subscribe() (*nats.Subscription, error) {
 	if err := r.queue.EnsureStreams(); err != nil {
-		return err
+		return nil, err
 	}
 	js := r.queue.JetStream()
 	if err := r.ensureConsumer(js); err != nil {
-		return err
+		return nil, err
 	}
 	sub, err := js.PullSubscribe(queue.RemediationSubject, WorkerConsumer, nats.Bind(queue.RemediationStream, WorkerConsumer))
 	if err != nil {
-		return fmt.Errorf("subscribe remediation.execute: %w", err)
+		return nil, fmt.Errorf("subscribe remediation.execute: %w", err)
 	}
-	defer func() { _ = sub.Unsubscribe() }()
+	return sub, nil
+}
+
+func (r *Runner) Start(ctx context.Context, workerID string) error {
+	sub, err := r.subscribe()
+	if err != nil {
+		return err
+	}
+	r.subscribed.Store(true)
+	defer func() { r.subscribed.Store(false); _ = sub.Unsubscribe() }()
 
 	go r.heartbeat(ctx, workerID)
 
@@ -155,7 +203,9 @@ func (r *Runner) Start(ctx context.Context, workerID string) error {
 	// half way; Start waits for them (bounded by the job timeout) to finish.
 	jobCtx := context.WithoutCancel(ctx)
 	slots := make(chan struct{}, r.cfg.Concurrency)
+	fetchFailures := 0
 	for ctx.Err() == nil {
+		r.lastPoll.Store(time.Now().UnixNano())
 		free := cap(slots) - len(slots)
 		if free == 0 {
 			select {
@@ -168,17 +218,41 @@ func (r *Runner) Start(ctx context.Context, workerID string) error {
 		msgs, err := sub.Fetch(free, nats.MaxWait(r.cfg.FetchWait))
 		if err != nil {
 			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+				fetchFailures = 0
 				continue
 			}
 			if ctx.Err() != nil {
 				break
 			}
+			// Anything else means the pull cannot be served: the connection
+			// is down, or the consumer or stream no longer exists (a
+			// JetStream node that restarted without its storage). Say so,
+			// and once connected again rebuild the subscription instead of
+			// polling a consumer that is gone.
+			fetchFailures++
+			if fetchFailures == 1 || fetchFailures%30 == 0 {
+				r.log().Warn("cannot fetch remediation jobs", "error", err, "consecutive_failures", fetchFailures)
+			}
+			if r.queue.Connected() {
+				if fresh, subErr := r.subscribe(); subErr != nil {
+					r.subscribed.Store(false)
+					if fetchFailures == 1 || fetchFailures%30 == 0 {
+						r.log().Warn("cannot re-create the remediation subscription", "error", subErr)
+					}
+				} else {
+					_ = sub.Unsubscribe()
+					sub = fresh
+					r.subscribed.Store(true)
+					r.log().Info("remediation subscription re-created")
+				}
+			}
 			select {
-			case <-time.After(time.Second):
+			case <-time.After(r.cfg.FetchRetryWait):
 			case <-ctx.Done():
 			}
 			continue
 		}
+		fetchFailures = 0
 		for _, msg := range msgs {
 			slots <- struct{}{}
 			r.inflight.Add(1)

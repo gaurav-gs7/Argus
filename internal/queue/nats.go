@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"time"
@@ -50,11 +51,70 @@ type Event struct {
 	Payload        map[string]any `json:"payload"`
 }
 
+// ConnectOptions tune the connection. The zero value is right for
+// production.
+type ConnectOptions struct {
+	// Name identifies this client in NATS server logs and monitoring.
+	Name string
+	// ReconnectWait is the pause between reconnect attempts (default 2s).
+	ReconnectWait time.Duration
+	// Logger receives connection state changes (default slog.Default()).
+	Logger *slog.Logger
+	// OnStatus is called with false when the connection drops and true when
+	// it is re-established.
+	OnStatus func(connected bool)
+}
+
+// Connect connects with the default options.
 func Connect(url string) (*Client, error) {
-	conn, err := nats.Connect(url)
+	return ConnectWith(url, ConnectOptions{})
+}
+
+// ConnectWith connects to NATS and keeps reconnecting for as long as the
+// process runs. The nats.go default gives up after 60 attempts (about two
+// minutes) and closes the connection for good; a process that outlived a
+// longer outage then held a dead connection forever, with nothing logged
+// and no way to recover short of a restart.
+func ConnectWith(url string, opts ConnectOptions) (*Client, error) {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	wait := opts.ReconnectWait
+	if wait <= 0 {
+		wait = 2 * time.Second
+	}
+	status := func(connected bool) {
+		if opts.OnStatus != nil {
+			opts.OnStatus(connected)
+		}
+	}
+	conn, err := nats.Connect(url,
+		nats.Name(opts.Name),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(wait),
+		nats.ReconnectJitter(wait/2, wait/2),
+		nats.DisconnectErrHandler(func(c *nats.Conn, err error) {
+			if c.IsClosed() {
+				return // a deliberate Close, reported by the closed handler
+			}
+			logger.Warn("NATS connection lost; reconnecting", "error", err)
+			status(false)
+		}),
+		nats.ReconnectHandler(func(c *nats.Conn) {
+			logger.Info("NATS connection re-established", "server", c.ConnectedUrlRedacted())
+			status(true)
+		}),
+		nats.ClosedHandler(func(c *nats.Conn) {
+			// With unlimited reconnects this only follows Close.
+			logger.Info("NATS connection closed")
+			status(false)
+		}),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect nats: %w", err)
 	}
+	status(true)
 	js, err := conn.JetStream()
 	if err != nil {
 		return nil, fmt.Errorf("create jetstream context: %w", err)
@@ -150,6 +210,11 @@ func (c *Client) RetireLegacyStreams() (LegacyStreamReport, error) {
 	return report, nil
 }
 
+// Connected reports whether the client currently has a live connection.
+func (c *Client) Connected() bool {
+	return c.conn != nil && c.conn.IsConnected()
+}
+
 // Publish stores an event on JetStream. A non-empty EventID is sent as
 // Nats-Msg-Id, so publishing the same event twice inside DuplicateWindow
 // (for example a retry after a lost publish ack) stores it once. The returned
@@ -163,11 +228,22 @@ func (c *Client) Publish(ctx context.Context, subject string, event Event) (bool
 	if event.EventID != "" {
 		opts = append(opts, nats.MsgId(event.EventID))
 	}
-	ack, err := c.js.PublishMsg(&nats.Msg{
-		Subject: subject,
-		Data:    body,
-		Header:  nats.Header{"Content-Type": []string{"application/json"}},
-	}, opts...)
+	publish := func() (*nats.PubAck, error) {
+		return c.js.PublishMsg(&nats.Msg{
+			Subject: subject,
+			Data:    body,
+			Header:  nats.Header{"Content-Type": []string{"application/json"}},
+		}, opts...)
+	}
+	ack, err := publish()
+	if errors.Is(err, nats.ErrNoStreamResponse) || errors.Is(err, nats.ErrNoResponders) {
+		// No stream owns the subject: the stream was lost, for example a
+		// JetStream node restarted without its storage. Recreate and retry.
+		if ensureErr := c.EnsureStreams(); ensureErr != nil {
+			return false, fmt.Errorf("publish event: %w (recreating streams also failed: %v)", err, ensureErr)
+		}
+		ack, err = publish()
+	}
 	if err != nil {
 		return false, fmt.Errorf("publish event: %w", err)
 	}
@@ -187,7 +263,12 @@ func (c *Client) DeadLetter(ctx context.Context, msg *nats.Msg, reason string) e
 		header.Set("Argus-Original-Stream", meta.Stream)
 		header.Set("Argus-Stream-Sequence", strconv.FormatUint(meta.Sequence.Stream, 10))
 		header.Set("Argus-Deliveries", strconv.FormatUint(meta.NumDelivered, 10))
-		opts = append(opts, nats.MsgId(fmt.Sprintf("dlq-%s-%d", meta.Stream, meta.Sequence.Stream)))
+		// One dead letter per original message, even if two workers give up
+		// on it. The message timestamp is part of the id because stream
+		// sequences restart when a stream is recreated, and a sequence-only
+		// id then collided with an earlier dead letter inside the duplicate
+		// window and was silently dropped.
+		opts = append(opts, nats.MsgId(fmt.Sprintf("dlq-%s-%d-%d", meta.Stream, meta.Sequence.Stream, meta.Timestamp.UnixNano())))
 	}
 	if _, err := c.js.PublishMsg(&nats.Msg{Subject: DeadLetterSubject, Data: msg.Data, Header: header}, opts...); err != nil {
 		return fmt.Errorf("publish dead letter: %w", err)

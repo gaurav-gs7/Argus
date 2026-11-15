@@ -19,6 +19,7 @@ type Metrics struct {
 	RemediationRedispatchesTotal          *prometheus.CounterVec
 	RemediationOutboxOldestPendingSeconds prometheus.Gauge
 	RemediationWaitingForWorker           prometheus.Gauge
+	NATSConnected                         prometheus.Gauge
 	HeliosReconciliationsTotal            *prometheus.CounterVec
 	AuditWriteFailuresTotal               *prometheus.CounterVec
 	RCAConfidence                         *prometheus.HistogramVec
@@ -46,6 +47,16 @@ func (m *Metrics) AuditFailureReporter(logger interface {
 		m.AuditWriteFailuresTotal.WithLabelValues(action).Inc()
 		logger.Error("audit append failed", "action", action, "resource_id", resourceID, "error", err)
 	}
+}
+
+// NATSStatus reports connection state changes to the argus_nats_connected
+// gauge; pass it as queue.ConnectOptions.OnStatus.
+func (m *Metrics) NATSStatus(connected bool) {
+	if connected {
+		m.NATSConnected.Set(1)
+		return
+	}
+	m.NATSConnected.Set(0)
 }
 
 func MustRegister() *Metrics {
@@ -105,6 +116,10 @@ func MustRegister() *Metrics {
 			Name: "argus_remediation_redispatches_total",
 			Help: "Reconciler actions on remediations no worker picked up, by result (redispatched, exhausted)",
 		}, []string{"result"}),
+		NATSConnected: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "argus_nats_connected",
+			Help: "1 while this process is connected to NATS, 0 while it is reconnecting",
+		}),
 		RemediationWaitingForWorker: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "argus_remediation_waiting_for_worker",
 			Help: "Stuck remediations the reconciler is holding because no live worker supports their action",
@@ -208,6 +223,7 @@ func MustRegister() *Metrics {
 		m.RemediationRedispatchesTotal,
 		m.RemediationOutboxOldestPendingSeconds,
 		m.RemediationWaitingForWorker,
+		m.NATSConnected,
 		m.HeliosReconciliationsTotal,
 		m.AuditWriteFailuresTotal,
 		m.RCAConfidence,

@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gauravgs7/argus/internal/queue"
+	"github.com/gauravgs7/argus/internal/testutil"
 	"github.com/nats-io/nats.go"
 )
 
@@ -245,5 +248,143 @@ func TestRetireLegacyStreams(t *testing.T) {
 	}
 	if info, err := js.StreamInfo("ARGUS_RCA"); err != nil || info.State.Msgs != 1 {
 		t.Fatalf("a legacy stream with foreign data was touched: %v", err)
+	}
+}
+
+// natsHostPort is the test server's address without the scheme.
+func natsHostPort(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("ARGUS_TEST_NATS_URL")
+	if url == "" {
+		t.Skip("ARGUS_TEST_NATS_URL is not set")
+	}
+	return strings.TrimPrefix(url, "nats://")
+}
+
+// The nats.go default gives up after 60 reconnect attempts and closes the
+// connection for good; an Argus process that outlived a two-minute NATS
+// outage then never published or consumed again until it was restarted.
+// The client must keep trying for as long as the outage lasts.
+func TestClientReconnectsAfterAnOutageLongerThanSixtyAttempts(t *testing.T) {
+	proxy := testutil.NewTCPProxy(t, natsHostPort(t))
+	var mu sync.Mutex
+	var states []bool
+	client, err := queue.ConnectWith("nats://"+proxy.Addr(), queue.ConnectOptions{
+		Name: "outage-test", ReconnectWait: 20 * time.Millisecond,
+		OnStatus: func(connected bool) { mu.Lock(); states = append(states, connected); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.EnsureStreams(); err != nil {
+		t.Fatal(err)
+	}
+
+	proxy.Sever()
+	// 20ms wait + up to 10ms jitter: at least 100 attempts in 3s.
+	time.Sleep(3 * time.Second)
+	if client.Connected() {
+		t.Fatal("client reports connected through a severed link")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	if _, err := client.Publish(ctx, queue.RemediationSubject, queue.Event{EventID: "during-outage-" + time.Now().Format("150405.000000000")}); err == nil {
+		t.Fatal("publish succeeded during the outage")
+	}
+	cancel()
+
+	proxy.Restore()
+	deadline := time.Now().Add(5 * time.Second)
+	for !client.Connected() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !client.Connected() {
+		t.Fatal("client never reconnected after the outage ended")
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.Publish(ctx, queue.RemediationSubject, queue.Event{EventID: "after-outage-" + time.Now().Format("150405.000000000")}); err != nil {
+		t.Fatalf("publish after the outage: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(states) < 3 || !states[0] || states[1] || !states[len(states)-1] {
+		t.Fatalf("status callbacks=%v, want connected, disconnected, ..., connected", states)
+	}
+}
+
+// A JetStream node that restarts without its storage comes back with no
+// streams. Publishing must recreate them instead of failing forever.
+func TestPublishRecreatesALostStream(t *testing.T) {
+	client := connect(t)
+	if err := client.EnsureStreams(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.JetStream().DeleteStream(queue.RemediationStream); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := client.Publish(ctx, queue.RemediationSubject, queue.Event{EventID: "lost-stream-" + time.Now().Format("150405.000000000")}); err != nil {
+		t.Fatalf("publish with the stream gone: %v", err)
+	}
+	info, err := client.JetStream().StreamInfo(queue.RemediationStream)
+	if err != nil || info.State.Msgs != 1 {
+		t.Fatalf("stream after publish: %+v err=%v", info, err)
+	}
+}
+
+// Stream sequences restart when a stream is recreated. A dead letter whose
+// id was only stream+sequence then matched an earlier one inside the
+// duplicate window and was dropped without an error.
+func TestDeadLettersSurviveStreamRecreation(t *testing.T) {
+	client := connect(t)
+	js := client.JetStream()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	deadLetterFirstMessage := func(label string) {
+		t.Helper()
+		_ = js.DeleteStream(queue.RemediationStream)
+		if err := client.EnsureStreams(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Publish(ctx, queue.RemediationSubject, queue.Event{EventID: label + time.Now().Format("150405.000000000"), Payload: map[string]any{"remediation_id": label}}); err != nil {
+			t.Fatal(err)
+		}
+		sub, err := js.PullSubscribe(queue.RemediationSubject, "", nats.BindStream(queue.RemediationStream))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+		msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+		if err != nil || len(msgs) != 1 {
+			t.Fatalf("fetch: %v", err)
+		}
+		if meta, _ := msgs[0].Metadata(); meta.Sequence.Stream != 1 {
+			t.Fatalf("expected the recreated stream to restart at sequence 1, got %d", meta.Sequence.Stream)
+		}
+		if err := client.DeadLetter(ctx, msgs[0], "retries_exhausted"); err != nil {
+			t.Fatal(err)
+		}
+		// Giving up on the same message twice is still one dead letter.
+		if err := client.DeadLetter(ctx, msgs[0], "retries_exhausted"); err != nil {
+			t.Fatal(err)
+		}
+		_ = msgs[0].Term()
+	}
+	if err := client.EnsureStreams(); err != nil {
+		t.Fatal(err)
+	}
+	if err := js.PurgeStream(queue.DeadLetterStream); err != nil {
+		t.Fatal(err)
+	}
+	deadLetterFirstMessage("first-life-")
+	deadLetterFirstMessage("second-life-")
+	letters, err := client.ListDeadLetters(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(letters) != 2 || letters[0].RemediationID != "first-life-" || letters[1].RemediationID != "second-life-" {
+		t.Fatalf("dead letters after stream recreation: %+v", letters)
 	}
 }

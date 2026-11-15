@@ -36,7 +36,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	queueClient, err := queue.Connect(cfg.NATSURL)
+	metrics := telemetry.MustRegister()
+	queueClient, err := queue.ConnectWith(cfg.NATSURL, queue.ConnectOptions{Name: "argus-worker", Logger: logger, OnStatus: metrics.NATSStatus})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,11 +45,11 @@ func main() {
 
 	store := incidents.NewStore(database)
 	auditor := audit.NewService(database)
-	metrics := telemetry.MustRegister()
 	reportAuditFailure := metrics.AuditFailureReporter(logger)
 	auditor.OnFailure(func(entry audit.Entry, err error) { reportAuditFailure(entry.Action, entry.ResourceID, err) })
 	controlState := workers.NewPostgresControlStateStore(database)
 	runner := workers.NewRunner(store, auditor, queueClient, metrics, workers.DefaultHandlers(controlState)...)
+	runner.SetLogger(logger)
 	runner.Configure(workers.RunnerConfig{
 		Concurrency: cfg.WorkerConcurrency,
 		JobTimeout:  cfg.WorkerJobTimeout,
